@@ -5,10 +5,10 @@ import (
 	"errors"
 	"flag"
 	"flisr/llog"
+	sm "flisr/state_machine"
 	"flisr/types"
 	"flisr/webapi"
 	"flisr/zmq_bus"
-	"fmt"
 	"github.com/PVKonovalov/localcache"
 	"github.com/PVKonovalov/topogrid"
 	"gopkg.in/ini.v1"
@@ -21,6 +21,7 @@ const ApiGetEquipment = "/api/equipment"
 
 // Resource Types
 const (
+	ResourceTypeIsNotDefine      = 0
 	ResourceTypeMeasure          = 1
 	ResourceTypeState            = 2
 	ResourceTypeControl          = 3
@@ -105,6 +106,7 @@ type ThisService struct {
 	zmq                       *zmq_bus.ZmqBus
 	outputQueue               chan types.RtdbMessage
 	inputDataQueue            chan types.RtdbMessage
+	stateMachine              *sm.StateMachine
 }
 
 // New service
@@ -113,6 +115,7 @@ func New() *ThisService {
 		log:                       llog.NewLevelLog(llog.Ldate | llog.Ltime | llog.Lmicroseconds),
 		equipmentFromEquipmentId:  make(map[int]EquipmentStruct),
 		resourceStructFromPointId: make(map[uint64]ResourceStruct),
+		stateMachine:              sm.New(),
 	}
 }
 
@@ -355,7 +358,7 @@ func (s *ThisService) CreateInternalParametersFromProfile() {
 		for _, resource := range equipment.Resource {
 			if resource.TypeId == ResourceTypeProtect ||
 				resource.TypeId == ResourceTypeReclosing ||
-				resource.TypeId == ResourceTypeStateLineSegment {
+				resource.TypeId == ResourceTypeState {
 				s.resourceStructFromPointId[resource.PointId] = ResourceStruct{
 					equipmentId:    equipment.Id,
 					resourceTypeId: resource.TypeId,
@@ -397,8 +400,27 @@ func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
 }
 
 func (s *ThisService) ReceiveDataWorker() {
+	var err error
 	for point := range s.inputDataQueue {
-		s.log.Debugf("D: %+v", point)
+		resource := s.resourceStructFromPointId[point.Id]
+
+		switch resource.resourceTypeId {
+		case ResourceTypeState:
+			s.log.Debugf("State: %+v", point)
+			err = s.stateMachine.NextState(resource.resourceTypeId)
+		case ResourceTypeProtect:
+			s.log.Debugf("Protect: %+v", point)
+			err = s.stateMachine.NextState(resource.resourceTypeId)
+		case ResourceTypeReclosing:
+			s.log.Debugf("Reclosing: %+v", point)
+			err = s.stateMachine.NextState(resource.resourceTypeId)
+		default:
+			s.log.Errorf("Unknown resource type: %+v", point)
+		}
+
+		if err != nil {
+			s.log.Debugf("%v", err)
+		}
 	}
 }
 
@@ -418,9 +440,42 @@ func (s *ThisService) OutputMessageWorker() {
 	}
 }
 
+func (s *ThisService) StateHandler(state sm.State) {
+	s.log.Debugf("State: %d", state)
+	switch state {
+	case sm.State2:
+		s.log.Debugf("!!")
+	case sm.State5:
+		s.log.Debugf("Reclosing OK")
+	case sm.State6:
+		s.log.Debugf("Reclosing failed")
+	}
+}
+
+func (s *ThisService) InitStateMachine() error {
+	var err error = nil
+
+	s.stateMachine.AddState(sm.StateInit, map[int]sm.State{ResourceTypeProtect: sm.StateAlarmReceived})
+	s.stateMachine.AddState(sm.StateAlarmReceived,
+		map[int]sm.State{
+			ResourceTypeProtect: sm.StateAlarmReceived,
+			ResourceTypeState:   sm.State3,
+		})
+	err = s.stateMachine.SetTimeout(sm.StateAlarmReceived, 5000, sm.State2)
+	s.stateMachine.AddState(sm.State2, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+	s.stateMachine.AddState(sm.State3, map[int]sm.State{ResourceTypeReclosing: sm.State5})
+	err = s.stateMachine.SetTimeout(sm.State3, 5000, sm.State6)
+	s.stateMachine.AddState(sm.State5, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+	s.stateMachine.AddState(sm.State6, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+
+	s.stateMachine.Start(sm.StateInit)
+
+	return err
+}
+
 func main() {
 	s := New()
-
+	s.stateMachine.StateHandler = s.StateHandler
 	var configFile string
 	var isLoadFromCache bool
 
@@ -461,9 +516,13 @@ func main() {
 	s.CreateInternalParametersFromProfile()
 
 	err = s.LoadTopologyGrid()
-
 	if err != nil {
 		s.log.Fatalf("Failed to load topology: %v", err)
+	}
+
+	err = s.InitStateMachine()
+	if err != nil {
+		s.log.Fatalf("Failed to configure state machine: %v", err)
 	}
 
 	s.zmq, err = zmq_bus.New(1, 1)
@@ -488,86 +547,9 @@ func main() {
 
 	go s.ReceiveDataWorker()
 
-	//s.log.Debugf("---- NodeIsPoweredBy ----")
-	//for _, node := range s.topologyProfile.Node {
-	//	poweredBy, err := s.topology.NodeIsPoweredBy(node.Id)
-	//	if err != nil {
-	//		s.log.Errorf("%v", err)
-	//	}
-	//	s.log.Debugf("%d:%s <- %v:%s", node.Id, s.topology.EquipmentNameByNodeId(node.Id), poweredBy, s.topology.EquipmentNameByNodeIdArray(poweredBy))
-	//}
-	//
-	//s.log.Debugf("---- NodeCanBePoweredBy ----")
-	//for _, node := range s.topologyProfile.Node {
-	//	poweredBy, err := s.topology.NodeCanBePoweredBy(node.Id)
-	//	if err != nil {
-	//		s.log.Errorf("%v", err)
-	//	}
-	//	s.log.Debugf("%d:%s <- %v:%s", node.Id, s.topology.EquipmentNameByNodeId(node.Id), poweredBy, s.topology.EquipmentNameByNodeIdArray(poweredBy))
-	//}
-	//
-	//s.log.Debugf("---- CircuitBreakersNextToNode ----")
-	//for _, node := range s.topologyProfile.Node {
-	//	poweredBy, err := s.topology.CircuitBreakersNextToNode(node.Id)
-	//	if err != nil {
-	//		s.log.Errorf("%v", err)
-	//	}
-	//	s.log.Debugf("%d:%s <- %v:%s", node.Id, s.topology.EquipmentNameByNodeId(node.Id), poweredBy, s.topology.EquipmentNameByEdgeIdArray(poweredBy))
-	//}
+	s.log.Infof("Started")
 
-	// fmt.Printf("%s", s.topology.GetAsGraphMl())
+	err = s.zmq.WaitingLoop()
 
-	s.topology.SetEquipmentElectricalState()
-	// s.topology.PrintEquipment()
-
-	// List of alarms and events
-	events := []uint64{2649, 2599, 2588, 2663, 2674}
-	equipmentArray := make([]int, 0)
-
-	// List of alarms
-	for _, event := range events {
-		resource := s.resourceStructFromPointId[event]
-		if resource.resourceTypeId == 4 {
-			equipmentArray = append(equipmentArray, resource.equipmentId)
-		}
-	}
-
-	equipmentId, powerSupplyNodeId, numberOfSwitches := s.topology.GetFurthestEquipmentFromPower(equipmentArray)
-	fmt.Printf("%v->%d:%d:%d\n", equipmentArray, equipmentId, powerSupplyNodeId, numberOfSwitches)
-
-	furthestNodeId := s.topology.GetFurthestEquipmentNodeIdFromPower(powerSupplyNodeId, equipmentId)
-	if furthestNodeId == 0 {
-		fmt.Printf("FurthestEquipmentNode is not found\n")
-		return
-	}
-
-	fmt.Printf("%d:%d:'%s'->%d\n", powerSupplyNodeId, equipmentId, s.topology.EquipmentNameByEquipmentId(equipmentId), furthestNodeId)
-
-	cbList, err := s.topology.GetCircuitBreakersEdgeIdsNextToNode(furthestNodeId)
-
-	if err != nil {
-		fmt.Printf("error: %v\n", err)
-		return
-	}
-
-	// List of CBs to switch to OFF state
-	fmt.Printf("%+v:[%s]\n", cbList, s.topology.EquipmentNameByEdgeIdArray(cbList))
-
-	for _, cbId := range cbList {
-		equipmentId, err := s.topology.EquipmentIdByEdgeId(cbId)
-		if err != nil {
-			fmt.Printf("error: %v\n", err)
-			return
-		}
-
-		err = s.topology.SetSwitchStateByEquipmentId(equipmentId, 0)
-		if err != nil {
-			fmt.Printf("error: %v\n", err)
-			return
-		}
-	}
-
-	s.topology.SetEquipmentElectricalState()
-	// s.topology.PrintEquipment()
-
+	s.log.Errorf("Stopped with error: %v", err)
 }
