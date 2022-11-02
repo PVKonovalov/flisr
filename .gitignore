@@ -16,3 +16,5 @@
 .idea/
 flisr
 *.cfg
+cache/
+!flisr-init.cfg

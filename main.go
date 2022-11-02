@@ -424,7 +424,7 @@ func main() {
 	var configFile string
 	var isLoadFromCache bool
 
-	flag.StringVar(&configFile, "conf", "/usr/lib/ema/flisr/flisr.cfg", "path to FLISR configuration file")
+	flag.StringVar(&configFile, "conf", "flisr.cfg", "path to FLISR configuration file")
 	flag.BoolVar(&isLoadFromCache, "cache", false, "load profile from local cache")
 	flag.Parse()
 
