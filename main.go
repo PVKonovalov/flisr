@@ -420,11 +420,15 @@ func (s *ThisService) ReceiveDataWorker() {
 			s.log.Debugf("State: %+v", point)
 			err = s.stateMachine.NextState(resource.resourceTypeId)
 		case ResourceTypeProtect:
-			s.log.Debugf("Protect: %+v", point)
-			err = s.stateMachine.NextState(resource.resourceTypeId)
+			if point.Value == 1 {
+				s.log.Debugf("Protect: %+v", point)
+				err = s.stateMachine.NextState(resource.resourceTypeId)
+			}
 		case ResourceTypeReclosing:
-			s.log.Debugf("Reclosing: %+v", point)
-			err = s.stateMachine.NextState(resource.resourceTypeId)
+			if point.Value == 1 {
+				s.log.Debugf("Reclosing: %+v", point)
+				err = s.stateMachine.NextState(resource.resourceTypeId)
+			}
 		default:
 			s.log.Errorf("Unknown resource type: %+v", point)
 		}

@@ -49,13 +49,12 @@ func (s *StateMachine) SetTimeout(curState State, timeoutMs time.Duration, nextS
 }
 
 func (s *StateMachine) MoveToState(newState State) error {
-	fmt.Printf("->%d\n", newState)
+	fmt.Printf("%d->%d\n", s.curState, newState)
 
 	if state, exists := s.stateMatrix[newState]; exists {
 		s.curState = newState
 		if state.timeoutMs != 0 && state.nextStateByTimeout != StateNil {
-			s.timer = time.NewTimer(state.timeoutMs * time.Millisecond)
-			go s.timeoutWorker()
+			s.timer = time.AfterFunc(state.timeoutMs*time.Millisecond, s.timeoutWorker)
 		}
 		s.StateHandler(newState)
 		if nextState := s.unconditionalMoveTo(); nextState != StateNil {
@@ -94,7 +93,6 @@ func (s *StateMachine) Start(state State) {
 }
 
 func (s *StateMachine) timeoutWorker() {
-	<-s.timer.C
 	state := s.stateMatrix[s.curState]
 	_ = s.MoveToState(state.nextStateByTimeout)
 }
