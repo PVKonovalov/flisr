@@ -10,13 +10,6 @@ type State int
 
 const StateNil State = -1
 const StateInit State = 0
-const StateAlarmReceived State = 1
-const State2 State = 2
-const State3 State = 3
-const State4 State = 4
-const State5 State = 5
-const State6 State = 6
-const State7 State = 7
 
 type StateStruct struct {
 	thisState          State
@@ -99,8 +92,41 @@ func (s *StateMachine) NextState(condition int) error {
 func (s *StateMachine) Start(state State) {
 	s.curState = state
 }
+
 func (s *StateMachine) timeoutWorker() {
 	<-s.timer.C
 	state := s.stateMatrix[s.curState]
 	_ = s.MoveToState(state.nextStateByTimeout)
+}
+
+func (s *StateMachine) GetAsGraphMl() string {
+	var graphMl string
+	for curState, _ := range s.stateMatrix {
+		if curState == s.curState {
+			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d\"\n    graphics\n      [\n      w 40.0\n      h 40.0\n      type \"ellipse\"\n      fill \"#FF0000\"\n    ]\n]\n",
+				curState, curState)
+		} else {
+			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d\"\n    graphics\n      [\n      w 30.0\n      h 30.0\n      type \"ellipse\"\n    ]\n]\n",
+				curState, curState)
+		}
+	}
+
+	for curState, state := range s.stateMatrix {
+		if state.timeoutMs != 0 && state.nextStateByTimeout != StateNil {
+			graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    label \"T:%dms\"\n    graphics\n    [\n      style \"dashed\"\n      fill  \"#3366FF\"\n      targetArrow \"standard\"\n    ]\n  ]\n",
+				curState, state.nextStateByTimeout, state.timeoutMs)
+		}
+
+		for condition, nextState := range state.nextState {
+			if condition != 0 {
+				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    label \"%d\"\n  ]\n",
+					curState, nextState, condition)
+			} else {
+				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    graphics\n    [\n      sourceArrow  \"white_circle\"\n      targetArrow  \"standard\"\n    ]\n  ]\n",
+					curState, nextState)
+			}
+		}
+	}
+
+	return "graph [\n" + graphMl + "]\n"
 }

@@ -9,6 +9,7 @@ import (
 	"flisr/types"
 	"flisr/webapi"
 	"flisr/zmq_bus"
+	"fmt"
 	"github.com/PVKonovalov/localcache"
 	"github.com/PVKonovalov/topogrid"
 	"gopkg.in/ini.v1"
@@ -30,6 +31,16 @@ const (
 	ResourceTypeChangeSetGroup   = 6
 	ResourceTypeReclosing        = 7
 	ResourceTypeStateLineSegment = 8
+)
+
+const (
+	StateAlarmReceived sm.State = 1
+	State2             sm.State = 2
+	State3             sm.State = 3
+	State4             sm.State = 4
+	State5             sm.State = 5
+	State6             sm.State = 6
+	State7             sm.State = 7
 )
 
 // ConfigStruct Structure with current Scada configuration
@@ -443,11 +454,11 @@ func (s *ThisService) OutputMessageWorker() {
 func (s *ThisService) StateHandler(state sm.State) {
 	s.log.Debugf("State: %d", state)
 	switch state {
-	case sm.State2:
+	case State2:
 		s.log.Debugf("!!")
-	case sm.State5:
+	case State5:
 		s.log.Debugf("Reclosing OK")
-	case sm.State6:
+	case State6:
 		s.log.Debugf("Reclosing failed")
 	}
 }
@@ -455,20 +466,22 @@ func (s *ThisService) StateHandler(state sm.State) {
 func (s *ThisService) InitStateMachine() error {
 	var err error = nil
 
-	s.stateMachine.AddState(sm.StateInit, map[int]sm.State{ResourceTypeProtect: sm.StateAlarmReceived})
-	s.stateMachine.AddState(sm.StateAlarmReceived,
+	s.stateMachine.AddState(sm.StateInit, map[int]sm.State{ResourceTypeProtect: StateAlarmReceived})
+	s.stateMachine.AddState(StateAlarmReceived,
 		map[int]sm.State{
-			ResourceTypeProtect: sm.StateAlarmReceived,
-			ResourceTypeState:   sm.State3,
+			ResourceTypeProtect: StateAlarmReceived,
+			ResourceTypeState:   State3,
 		})
-	err = s.stateMachine.SetTimeout(sm.StateAlarmReceived, 5000, sm.State2)
-	s.stateMachine.AddState(sm.State2, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddState(sm.State3, map[int]sm.State{ResourceTypeReclosing: sm.State5})
-	err = s.stateMachine.SetTimeout(sm.State3, 5000, sm.State6)
-	s.stateMachine.AddState(sm.State5, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddState(sm.State6, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+	err = s.stateMachine.SetTimeout(StateAlarmReceived, 5000, State2)
+	s.stateMachine.AddState(State2, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+	s.stateMachine.AddState(State3, map[int]sm.State{ResourceTypeReclosing: State5})
+	err = s.stateMachine.SetTimeout(State3, 5000, State6)
+	s.stateMachine.AddState(State5, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+	s.stateMachine.AddState(State6, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
 
 	s.stateMachine.Start(sm.StateInit)
+
+	fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
 
 	return err
 }
