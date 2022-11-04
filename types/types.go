@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -37,6 +38,10 @@ type RtdbMessage struct {
 	Source        uint32  `json:"src"`
 	Select        int     `json:"s"`
 	Execute       int     `json:"e"`
+}
+
+func (c RtdbMessage) String() string {
+	return fmt.Sprintf("I: %d V: %f T: %s Q: %d S: %d", c.Id, c.Value, c.Timestamp, c.Quality, c.Source)
 }
 
 // ParseScadaRtdbData Parse data from Scada RTDB to Go internal types

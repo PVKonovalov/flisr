@@ -2,18 +2,21 @@ package state_machine
 
 import (
 	"errors"
+	"flisr/llog"
 	"fmt"
 	"time"
 )
 
 type State int
 
+type StateList map[int]State
+
 const StateNil State = -1
 const StateInit State = 0
 
 type StateStruct struct {
 	thisState          State
-	nextState          map[int]State
+	nextState          StateList
 	timeoutMs          time.Duration
 	nextStateByTimeout State
 }
@@ -23,17 +26,19 @@ type StateMachine struct {
 	stateMatrix  map[State]StateStruct
 	timer        *time.Timer
 	StateHandler func(thisState State)
+	log          *llog.LevelLog
 }
 
-func New() *StateMachine {
+func New(logger *llog.LevelLog) *StateMachine {
 	return &StateMachine{
 		curState:    StateInit,
 		stateMatrix: make(map[State]StateStruct),
 		timer:       nil,
+		log:         logger,
 	}
 }
 
-func (s *StateMachine) AddState(newState State, nextState map[int]State) {
+func (s *StateMachine) AddState(newState State, nextState StateList) {
 	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, timeoutMs: 0, nextStateByTimeout: StateNil}
 }
 
@@ -49,7 +54,8 @@ func (s *StateMachine) SetTimeout(curState State, timeoutMs time.Duration, nextS
 }
 
 func (s *StateMachine) MoveToState(newState State) error {
-	fmt.Printf("%d->%d\n", s.curState, newState)
+
+	s.log.Debugf("%d->%d", s.curState, newState)
 
 	if state, exists := s.stateMatrix[newState]; exists {
 		s.curState = newState

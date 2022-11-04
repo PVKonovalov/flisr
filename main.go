@@ -118,15 +118,18 @@ type ThisService struct {
 	outputQueue               chan types.RtdbMessage
 	inputDataQueue            chan types.RtdbMessage
 	stateMachine              *sm.StateMachine
+	alarmProtect              []types.RtdbMessage
 }
 
 // New service
 func New() *ThisService {
+	logger := llog.NewLevelLog(llog.Ldate | llog.Ltime | llog.Lmicroseconds)
 	return &ThisService{
-		log:                       llog.NewLevelLog(llog.Ldate | llog.Ltime | llog.Lmicroseconds),
+		log:                       logger,
 		equipmentFromEquipmentId:  make(map[int]EquipmentStruct),
 		resourceStructFromPointId: make(map[uint64]ResourceStruct),
-		stateMachine:              sm.New(),
+		stateMachine:              sm.New(logger),
+		alarmProtect:              make([]types.RtdbMessage, 0),
 	}
 }
 
@@ -417,20 +420,21 @@ func (s *ThisService) ReceiveDataWorker() {
 
 		switch resource.resourceTypeId {
 		case ResourceTypeState:
-			s.log.Debugf("State: %+v", point)
+			s.log.Debugf("State: %s", point)
 			err = s.stateMachine.NextState(resource.resourceTypeId)
 		case ResourceTypeProtect:
 			if point.Value == 1 {
-				s.log.Debugf("Protect: %+v", point)
+				s.log.Debugf("Protect: %s", point)
+				s.alarmProtect = append(s.alarmProtect, point)
 				err = s.stateMachine.NextState(resource.resourceTypeId)
 			}
 		case ResourceTypeReclosing:
 			if point.Value == 1 {
-				s.log.Debugf("Reclosing: %+v", point)
+				s.log.Debugf("Reclosing: %s", point)
 				err = s.stateMachine.NextState(resource.resourceTypeId)
 			}
 		default:
-			s.log.Errorf("Unknown resource type: %+v", point)
+			s.log.Errorf("Unknown resource type: %s", point)
 		}
 
 		if err != nil {
@@ -455,37 +459,105 @@ func (s *ThisService) OutputMessageWorker() {
 	}
 }
 
+func (s *ThisService) FlisrGetFaultyEquipment() (int, int, int64) {
+	equipmentArray := make([]int, 0)
+
+	for _, event := range s.alarmProtect {
+		resource := s.resourceStructFromPointId[event.Id]
+		equipmentArray = append(equipmentArray, resource.equipmentId)
+	}
+
+	faultyEquipmentId, powerSupplyNodeId, numberOfSwitches := s.topology.GetFurthestEquipmentFromPower(equipmentArray)
+	s.log.Debugf("Fault in:%v->%d:%d:%d", equipmentArray, faultyEquipmentId, powerSupplyNodeId, numberOfSwitches)
+
+	return faultyEquipmentId, powerSupplyNodeId, numberOfSwitches
+}
+
+func (s *ThisService) FlisrIsolateEquipment(faultyEquipmentId int, powerSupplyNodeId int) error {
+	furthestNodeId := s.topology.GetFurthestEquipmentNodeIdFromPower(powerSupplyNodeId, faultyEquipmentId)
+	if furthestNodeId == 0 {
+		return errors.New(fmt.Sprintf("Furthest equipment node was not found for equipment id: %d", faultyEquipmentId))
+	}
+
+	s.log.Debugf("%d:%d:'%s'->%d", powerSupplyNodeId, faultyEquipmentId, s.topology.EquipmentNameByEquipmentId(faultyEquipmentId), furthestNodeId)
+
+	cbList, err := s.topology.GetCircuitBreakersEdgeIdsNextToNode(furthestNodeId)
+
+	if err != nil {
+		return err
+	}
+
+	// List of CBs to switch to OFF state
+	s.log.Debugf("Need to OFF %+v:[%s]", cbList, s.topology.EquipmentNameByEdgeIdArray(cbList))
+
+	for _, cbId := range cbList {
+		equipmentId, err := s.topology.EquipmentIdByEdgeId(cbId)
+		if err != nil {
+			return err
+		}
+
+		err = s.topology.SetSwitchStateByEquipmentId(equipmentId, 0)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *ThisService) StateHandler(state sm.State) {
-	s.log.Debugf("State: %d", state)
 	switch state {
+	case sm.StateInit:
+		s.alarmProtect = s.alarmProtect[:0]
 	case State2:
 		s.log.Debugf("!!")
 	case State5:
-		s.log.Debugf("Reclosing OK")
+		s.log.Debugf("Reclosing OK: %+v", s.alarmProtect)
 	case State6:
-		s.log.Debugf("Reclosing failed")
+		s.log.Debugf("Reclosing failed: %+v", s.alarmProtect)
+
+		faultyEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
+
+		if faultyEquipmentId != 0 {
+			err := s.FlisrIsolateEquipment(faultyEquipmentId, powerSupplyNodeId)
+			if err != nil {
+				s.log.Errorf("Failed to isolate equipment id %d: %v", faultyEquipmentId, err)
+			}
+		} else {
+			s.log.Errorf("Failed to find faulty equipment", faultyEquipmentId)
+		}
+
 	}
 }
 
 func (s *ThisService) InitStateMachine() error {
 	var err error = nil
 
-	s.stateMachine.AddState(sm.StateInit, map[int]sm.State{ResourceTypeProtect: StateAlarmReceived})
+	s.stateMachine.AddState(sm.StateInit, sm.StateList{ResourceTypeProtect: StateAlarmReceived})
 	s.stateMachine.AddState(StateAlarmReceived,
-		map[int]sm.State{
+		sm.StateList{
 			ResourceTypeProtect: StateAlarmReceived,
 			ResourceTypeState:   State3,
 		})
 	err = s.stateMachine.SetTimeout(StateAlarmReceived, 5000, State2)
-	s.stateMachine.AddState(State2, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddState(State3, map[int]sm.State{ResourceTypeReclosing: State5})
+
+	if err != nil {
+		return err
+	}
+
+	s.stateMachine.AddState(State2, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
+	s.stateMachine.AddState(State3, sm.StateList{ResourceTypeReclosing: State5})
 	err = s.stateMachine.SetTimeout(State3, 5000, State6)
-	s.stateMachine.AddState(State5, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddState(State6, map[int]sm.State{ResourceTypeIsNotDefine: sm.StateInit})
+
+	if err != nil {
+		return err
+	}
+
+	s.stateMachine.AddState(State5, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
+	s.stateMachine.AddState(State6, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
 
 	s.stateMachine.Start(sm.StateInit)
 
-	fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
+	// fmt.Printf("%s", s.stateMachine.GetAsGraphMl())
 
 	return err
 }
@@ -565,6 +637,8 @@ func main() {
 	go s.ReceiveDataWorker()
 
 	s.log.Infof("Started")
+
+	s.topology.SetEquipmentElectricalState()
 
 	err = s.zmq.WaitingLoop()
 
