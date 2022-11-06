@@ -54,7 +54,7 @@ type ConfigStruct struct {
 	zmqRtdbCommand           string
 	zmqRtdbInput             string
 	jobQueueLength           int
-	acrDelaySec              int
+	arcDelayMsec             time.Duration
 	rtdbPointFlisrState      uint64
 	pointSource              uint32
 }
@@ -108,28 +108,30 @@ type ResourceStruct struct {
 }
 
 type ThisService struct {
-	log                       *llog.LevelLog
-	config                    ConfigStruct
-	topologyProfile           *TopologyStruct
-	equipmentFromEquipmentId  map[int]EquipmentStruct
-	topology                  *topogrid.TopologyGridStruct
-	resourceStructFromPointId map[uint64]ResourceStruct
-	zmq                       *zmq_bus.ZmqBus
-	outputQueue               chan types.RtdbMessage
-	inputDataQueue            chan types.RtdbMessage
-	stateMachine              *sm.StateMachine
-	alarmProtect              []types.RtdbMessage
+	log                                   *llog.LevelLog
+	config                                ConfigStruct
+	topologyProfile                       *TopologyStruct
+	equipmentFromEquipmentId              map[int]EquipmentStruct
+	pointFromEquipmentIdAndResourceTypeId map[int]map[int]uint64
+	topology                              *topogrid.TopologyGridStruct
+	resourceStructFromPointId             map[uint64]ResourceStruct
+	zmq                                   *zmq_bus.ZmqBus
+	outputQueue                           chan types.RtdbMessage
+	inputDataQueue                        chan types.RtdbMessage
+	stateMachine                          *sm.StateMachine
+	alarmProtect                          []types.RtdbMessage
 }
 
 // New service
 func New() *ThisService {
 	logger := llog.NewLevelLog(llog.Ldate | llog.Ltime | llog.Lmicroseconds)
 	return &ThisService{
-		log:                       logger,
-		equipmentFromEquipmentId:  make(map[int]EquipmentStruct),
-		resourceStructFromPointId: make(map[uint64]ResourceStruct),
-		stateMachine:              sm.New(logger),
-		alarmProtect:              make([]types.RtdbMessage, 0),
+		log:                                   logger,
+		equipmentFromEquipmentId:              make(map[int]EquipmentStruct),
+		resourceStructFromPointId:             make(map[uint64]ResourceStruct),
+		stateMachine:                          sm.New(logger),
+		alarmProtect:                          make([]types.RtdbMessage, 0),
+		pointFromEquipmentIdAndResourceTypeId: make(map[int]map[int]uint64),
 	}
 }
 
@@ -155,9 +157,11 @@ func (s *ThisService) ReadConfig(configFile string) error {
 		s.config.jobQueueLength = 100
 	}
 
-	s.config.acrDelaySec, err = cfg.Section("FLISR").Key("ACR_DELAY_SEC").Int()
+	delay, err := cfg.Section("FLISR").Key("ARC_DELAY_MSEC").Int()
 	if err != nil {
-		s.config.acrDelaySec = 5
+		s.config.arcDelayMsec = 5000
+	} else {
+		s.config.arcDelayMsec = time.Duration(delay)
 	}
 
 	var pointSource uint64
@@ -377,6 +381,11 @@ func (s *ThisService) CreateInternalParametersFromProfile() {
 					equipmentId:    equipment.Id,
 					resourceTypeId: resource.TypeId,
 				}
+
+				if _, exists := s.pointFromEquipmentIdAndResourceTypeId[equipment.Id]; !exists {
+					s.pointFromEquipmentIdAndResourceTypeId[equipment.Id] = make(map[int]uint64)
+				}
+				s.pointFromEquipmentIdAndResourceTypeId[equipment.Id][resource.TypeId] = resource.PointId
 			}
 		}
 	}
@@ -421,6 +430,7 @@ func (s *ThisService) ReceiveDataWorker() {
 		switch resource.resourceTypeId {
 		case ResourceTypeState:
 			s.log.Debugf("State: %s", point)
+
 			err = s.stateMachine.NextState(resource.resourceTypeId)
 		case ResourceTypeProtect:
 			if point.Value == 1 {
@@ -445,6 +455,12 @@ func (s *ThisService) ReceiveDataWorker() {
 
 func (s *ThisService) OutputMessageWorker() {
 	for message := range s.outputQueue {
+
+		message.Timestamp.Time = time.Now()
+		message.TimestampRecv.Time = time.Now()
+		message.Quality = 0
+		message.Source = s.config.pointSource
+
 		s.log.Debugf("O: %+v", message)
 
 		data, err := json.Marshal([]types.RtdbMessage{message})
@@ -467,19 +483,19 @@ func (s *ThisService) FlisrGetFaultyEquipment() (int, int, int64) {
 		equipmentArray = append(equipmentArray, resource.equipmentId)
 	}
 
-	faultyEquipmentId, powerSupplyNodeId, numberOfSwitches := s.topology.GetFurthestEquipmentFromPower(equipmentArray)
-	s.log.Debugf("Fault in:%v->%d:%d:%d", equipmentArray, faultyEquipmentId, powerSupplyNodeId, numberOfSwitches)
+	faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches := s.topology.GetFurthestEquipmentFromPower(equipmentArray)
+	s.log.Debugf("Fault in:%v->%d:%d:%d", equipmentArray, faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches)
 
-	return faultyEquipmentId, powerSupplyNodeId, numberOfSwitches
+	return faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches
 }
 
 func (s *ThisService) FlisrIsolateEquipment(faultyEquipmentId int, powerSupplyNodeId int) error {
 	furthestNodeId := s.topology.GetFurthestEquipmentNodeIdFromPower(powerSupplyNodeId, faultyEquipmentId)
 	if furthestNodeId == 0 {
-		return errors.New(fmt.Sprintf("Furthest equipment node was not found for equipment id: %d", faultyEquipmentId))
+		return fmt.Errorf("furthest equipment node was not found for equipment id: %d", faultyEquipmentId)
 	}
 
-	s.log.Debugf("%d:%d:'%s'->%d", powerSupplyNodeId, faultyEquipmentId, s.topology.EquipmentNameByEquipmentId(faultyEquipmentId), furthestNodeId)
+	s.log.Debugf("Power:%d Equipment:%d:'%s'->Node:%d", powerSupplyNodeId, faultyEquipmentId, s.topology.EquipmentNameByEquipmentId(faultyEquipmentId), furthestNodeId)
 
 	cbList, err := s.topology.GetCircuitBreakersEdgeIdsNextToNode(furthestNodeId)
 
@@ -504,6 +520,13 @@ func (s *ThisService) FlisrIsolateEquipment(faultyEquipmentId int, powerSupplyNo
 	return nil
 }
 
+func (s *ThisService) SendFlisrAlarmForEquipment(equipmentId int, value int) {
+
+	if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeState]; exists {
+		s.outputQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
+	}
+}
+
 func (s *ThisService) StateHandler(state sm.State) {
 	switch state {
 	case sm.StateInit:
@@ -515,17 +538,17 @@ func (s *ThisService) StateHandler(state sm.State) {
 	case State6:
 		s.log.Debugf("Reclosing failed: %+v", s.alarmProtect)
 
-		faultyEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
+		faultyCBEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
 
-		if faultyEquipmentId != 0 {
-			err := s.FlisrIsolateEquipment(faultyEquipmentId, powerSupplyNodeId)
+		if faultyCBEquipmentId != 0 {
+
+			err := s.FlisrIsolateEquipment(faultyCBEquipmentId, powerSupplyNodeId)
 			if err != nil {
-				s.log.Errorf("Failed to isolate equipment id %d: %v", faultyEquipmentId, err)
+				s.log.Errorf("Failed to isolate equipment id %d: %v", faultyCBEquipmentId, err)
 			}
 		} else {
-			s.log.Errorf("Failed to find faulty equipment", faultyEquipmentId)
+			s.log.Errorf("Failed to find faulty equipment", faultyCBEquipmentId)
 		}
-
 	}
 }
 
@@ -533,25 +556,14 @@ func (s *ThisService) InitStateMachine() error {
 	var err error = nil
 
 	s.stateMachine.AddState(sm.StateInit, sm.StateList{ResourceTypeProtect: StateAlarmReceived})
-	s.stateMachine.AddState(StateAlarmReceived,
+	s.stateMachine.AddStateWithTimeout(StateAlarmReceived,
 		sm.StateList{
 			ResourceTypeProtect: StateAlarmReceived,
 			ResourceTypeState:   State3,
-		})
-	err = s.stateMachine.SetTimeout(StateAlarmReceived, 5000, State2)
-
-	if err != nil {
-		return err
-	}
+		}, s.config.arcDelayMsec, State2)
 
 	s.stateMachine.AddState(State2, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddState(State3, sm.StateList{ResourceTypeReclosing: State5})
-	err = s.stateMachine.SetTimeout(State3, 5000, State6)
-
-	if err != nil {
-		return err
-	}
-
+	s.stateMachine.AddStateWithTimeout(State3, sm.StateList{ResourceTypeReclosing: State5}, s.config.arcDelayMsec, State6)
 	s.stateMachine.AddState(State5, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
 	s.stateMachine.AddState(State6, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
 

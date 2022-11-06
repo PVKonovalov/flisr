@@ -1,15 +1,19 @@
 package state_machine
 
 import (
-	"errors"
-	"flisr/llog"
 	"fmt"
 	"time"
 )
 
+type logging interface {
+	Debugf(format string, args ...interface{})
+}
+
 type State int
 
+// StateList [condition] -> state
 type StateList map[int]State
+type StateMatrix map[State]StateStruct
 
 const StateNil State = -1
 const StateInit State = 0
@@ -17,40 +21,33 @@ const StateInit State = 0
 type StateStruct struct {
 	thisState          State
 	nextState          StateList
-	timeoutMs          time.Duration
+	conditionTimeoutMs time.Duration
 	nextStateByTimeout State
 }
 
 type StateMachine struct {
 	curState     State
-	stateMatrix  map[State]StateStruct
+	stateMatrix  StateMatrix
 	timer        *time.Timer
-	StateHandler func(thisState State)
-	log          *llog.LevelLog
+	StateHandler func(State)
+	log          logging
 }
 
-func New(logger *llog.LevelLog) *StateMachine {
+func New(logger logging) *StateMachine {
 	return &StateMachine{
 		curState:    StateInit,
-		stateMatrix: make(map[State]StateStruct),
+		stateMatrix: make(StateMatrix),
 		timer:       nil,
 		log:         logger,
 	}
 }
 
 func (s *StateMachine) AddState(newState State, nextState StateList) {
-	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, timeoutMs: 0, nextStateByTimeout: StateNil}
+	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, conditionTimeoutMs: 0, nextStateByTimeout: StateNil}
 }
 
-func (s *StateMachine) SetTimeout(curState State, timeoutMs time.Duration, nextStateByTimeout State) error {
-	if state, exists := s.stateMatrix[curState]; exists {
-		state.timeoutMs = timeoutMs
-		state.nextStateByTimeout = nextStateByTimeout
-		s.stateMatrix[curState] = state
-	} else {
-		return errors.New(fmt.Sprintf("state %d was not found", curState))
-	}
-	return nil
+func (s *StateMachine) AddStateWithTimeout(newState State, nextState StateList, timeoutMs time.Duration, nextStateByTimeout State) {
+	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, conditionTimeoutMs: timeoutMs, nextStateByTimeout: nextStateByTimeout}
 }
 
 func (s *StateMachine) MoveToState(newState State) error {
@@ -59,15 +56,15 @@ func (s *StateMachine) MoveToState(newState State) error {
 
 	if state, exists := s.stateMatrix[newState]; exists {
 		s.curState = newState
-		if state.timeoutMs != 0 && state.nextStateByTimeout != StateNil {
-			s.timer = time.AfterFunc(state.timeoutMs*time.Millisecond, s.timeoutWorker)
+		if state.conditionTimeoutMs != 0 && state.nextStateByTimeout != StateNil {
+			s.timer = time.AfterFunc(state.conditionTimeoutMs*time.Millisecond, s.timeoutWorker)
 		}
 		s.StateHandler(newState)
 		if nextState := s.unconditionalMoveTo(); nextState != StateNil {
 			return s.MoveToState(nextState)
 		}
 	} else {
-		return errors.New(fmt.Sprintf("next state %d was not found for state ", newState))
+		return fmt.Errorf("next state %d was not found for state ", newState)
 	}
 	return nil
 }
@@ -90,7 +87,7 @@ func (s *StateMachine) NextState(condition int) error {
 		}
 		return s.MoveToState(nextState)
 	} else {
-		return errors.New(fmt.Sprintf("next state was not found for state %d and condition %d", s.curState, condition))
+		return fmt.Errorf("next state was not found for state %d and condition %d", s.curState, condition)
 	}
 }
 
@@ -105,7 +102,7 @@ func (s *StateMachine) timeoutWorker() {
 
 func (s *StateMachine) GetAsGraphMl() string {
 	var graphMl string
-	for curState, _ := range s.stateMatrix {
+	for curState := range s.stateMatrix {
 		if curState == s.curState {
 			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d\"\n    graphics\n      [\n      w 40.0\n      h 40.0\n      type \"ellipse\"\n      fill \"#FF0000\"\n    ]\n]\n",
 				curState, curState)
@@ -116,9 +113,9 @@ func (s *StateMachine) GetAsGraphMl() string {
 	}
 
 	for curState, state := range s.stateMatrix {
-		if state.timeoutMs != 0 && state.nextStateByTimeout != StateNil {
+		if state.conditionTimeoutMs != 0 && state.nextStateByTimeout != StateNil {
 			graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    label \"T:%dms\"\n    graphics\n    [\n      style \"dashed\"\n      fill  \"#3366FF\"\n      targetArrow \"standard\"\n    ]\n  ]\n",
-				curState, state.nextStateByTimeout, state.timeoutMs)
+				curState, state.nextStateByTimeout, state.conditionTimeoutMs)
 		}
 
 		for condition, nextState := range state.nextState {
