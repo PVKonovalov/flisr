@@ -111,7 +111,8 @@ type ThisService struct {
 	log                                   *llog.LevelLog
 	config                                ConfigStruct
 	topologyProfile                       *TopologyStruct
-	topology                              *topogrid.TopologyGridStruct
+	topologyFlisr                         *topogrid.TopologyGridStruct
+	topologyGrid                          *topogrid.TopologyGridStruct
 	equipmentFromEquipmentId              map[int]EquipmentStruct
 	pointFromEquipmentIdAndResourceTypeId map[int]map[int]uint64
 	resourceStructFromPointId             map[uint64]ResourceStruct
@@ -121,7 +122,8 @@ type ThisService struct {
 	inputDataQueue                        chan types.RtdbMessage
 	switchDataQueue                       chan types.RtdbMessage
 	stateMachine                          *sm.StateMachine
-	alarmProtect                          []types.RtdbMessage
+	alarmProtectBuffer                    []types.RtdbMessage
+	stateSwitchBuffer                     []types.RtdbMessage
 }
 
 // New service
@@ -132,9 +134,10 @@ func New() *ThisService {
 		equipmentFromEquipmentId:              make(map[int]EquipmentStruct),
 		resourceStructFromPointId:             make(map[uint64]ResourceStruct),
 		stateMachine:                          sm.New(logger),
-		alarmProtect:                          make([]types.RtdbMessage, 0),
+		alarmProtectBuffer:                    make([]types.RtdbMessage, 0),
 		pointFromEquipmentIdAndResourceTypeId: make(map[int]map[int]uint64),
 		equipmentIdArrayFromResourceTypeId:    make(map[int][]int),
+		stateSwitchBuffer:                     make([]types.RtdbMessage, 0),
 	}
 }
 
@@ -401,18 +404,32 @@ func (s *ThisService) CreateInternalParametersFromProfile() {
 }
 
 func (s *ThisService) LoadTopologyGrid() error {
-	s.topology = topogrid.New(len(s.topologyProfile.Node))
+	s.topologyFlisr = topogrid.New(len(s.topologyProfile.Node))
 
 	for _, node := range s.topologyProfile.Node {
-		s.topology.AddNode(node.Id, node.EquipmentId, node.EquipmentTypeId, node.EquipmentName)
+		s.topologyFlisr.AddNode(node.Id, node.EquipmentId, node.EquipmentTypeId, node.EquipmentName)
 	}
 
 	for _, edge := range s.topologyProfile.Edge {
-		err := s.topology.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName)
+		err := s.topologyFlisr.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName)
 		if err != nil {
 			return err
 		}
 	}
+
+	s.topologyGrid = topogrid.New(len(s.topologyProfile.Node))
+
+	for _, node := range s.topologyProfile.Node {
+		s.topologyGrid.AddNode(node.Id, node.EquipmentId, node.EquipmentTypeId, node.EquipmentName)
+	}
+
+	for _, edge := range s.topologyProfile.Edge {
+		err := s.topologyGrid.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -435,16 +452,16 @@ func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
 func (s *ThisService) CurrentStateWorker() {
 	for point := range s.switchDataQueue {
 		if resource, exists := s.resourceStructFromPointId[point.Id]; exists {
-			err := s.topology.SetSwitchStateByEquipmentId(resource.equipmentId, int(point.Value))
+			err := s.topologyGrid.SetSwitchStateByEquipmentId(resource.equipmentId, int(point.Value))
 			if err != nil {
 				s.log.Errorf("Failed to change state: %v", err)
 				continue
 			}
 
-			s.topology.SetEquipmentElectricalState()
+			s.topologyGrid.SetEquipmentElectricalState()
 
 			for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
-				if newElectricalState, exists := s.topology.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
+				if newElectricalState, exists := s.topologyGrid.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
 					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeStateLineSegment]; exists {
 						s.log.Debugf("%d:%d->%d", equipmentId, newElectricalState, pointId)
 
@@ -469,18 +486,28 @@ func (s *ThisService) ReceiveDataWorker() {
 	for point := range s.inputDataQueue {
 		resource := s.resourceStructFromPointId[point.Id]
 
+		//if equipment, exists := s.equipmentFromEquipmentId[resource.equipmentId]; !exists {
+		//	continue
+		//} else {
+		//	if equipment.TypeId != topogrid.TypeCircuitBreaker &&
+		//		equipment.TypeId != topogrid.TypeDisconnectSwitch {
+		//		continue
+		//	}
+		//}
+
 		switch resource.resourceTypeId {
 		case ResourceTypeState:
 			s.log.Debugf("State: %s", point)
-
 			// For current state calculating
 			s.switchDataQueue <- point
+
+			s.stateSwitchBuffer = append(s.stateSwitchBuffer, point)
 
 			err = s.stateMachine.NextState(resource.resourceTypeId)
 		case ResourceTypeProtect:
 			if point.Value == 1 {
 				s.log.Debugf("Protect: %s", point)
-				s.alarmProtect = append(s.alarmProtect, point)
+				s.alarmProtectBuffer = append(s.alarmProtectBuffer, point)
 				err = s.stateMachine.NextState(resource.resourceTypeId)
 			}
 		case ResourceTypeReclosing:
@@ -493,7 +520,7 @@ func (s *ThisService) ReceiveDataWorker() {
 		}
 
 		if err != nil {
-			s.log.Debugf("%v", err)
+			s.log.Debugf("P:%d: %v", point.Id, err)
 		}
 	}
 }
@@ -523,41 +550,43 @@ func (s *ThisService) OutputMessageWorker() {
 func (s *ThisService) FlisrGetFaultyEquipment() (int, int, int64) {
 	equipmentArray := make([]int, 0)
 
-	for _, event := range s.alarmProtect {
+	for _, event := range s.alarmProtectBuffer {
 		resource := s.resourceStructFromPointId[event.Id]
 		equipmentArray = append(equipmentArray, resource.equipmentId)
 	}
 
-	faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches := s.topology.GetFurthestEquipmentFromPower(equipmentArray)
+	faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches := s.topologyFlisr.GetFurthestEquipmentFromPower(equipmentArray)
 	s.log.Debugf("Fault in:%v->%d:%d:%d", equipmentArray, faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches)
 
 	return faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches
 }
 
-func (s *ThisService) FlisrIsolateEquipment(faultyEquipmentId int, powerSupplyNodeId int) error {
-	furthestNodeId := s.topology.GetFurthestEquipmentNodeIdFromPower(powerSupplyNodeId, faultyEquipmentId)
-	if furthestNodeId == 0 {
-		return fmt.Errorf("furthest equipment node was not found for equipment id: %d", faultyEquipmentId)
+func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupplyNodeId int) error {
+	furthestTerminalNodeId := s.topologyFlisr.GetFurthestEquipmentNodeIdFromPower(powerSupplyNodeId, faultyCBEquipmentId)
+	if furthestTerminalNodeId == 0 {
+		return fmt.Errorf("furthest terminal node was not found for equipment id: %d", faultyCBEquipmentId)
 	}
 
-	s.log.Debugf("Power:%d Equipment:%d:'%s'->Node:%d", powerSupplyNodeId, faultyEquipmentId, s.topology.EquipmentNameByEquipmentId(faultyEquipmentId), furthestNodeId)
+	s.log.Debugf("Energized by node:%d Equipment:%d:'%s'->Node:%d", powerSupplyNodeId, faultyCBEquipmentId, s.topologyFlisr.EquipmentNameByEquipmentId(faultyCBEquipmentId), furthestTerminalNodeId)
 
-	cbList, err := s.topology.GetCircuitBreakersEdgeIdsNextToNode(furthestNodeId)
+	cbList, faultyEquipments, err := s.topologyFlisr.GetCircuitBreakersEdgeIdsNextToNode(furthestTerminalNodeId)
 
 	if err != nil {
 		return err
 	}
 
+	s.SendFlisrAlarmForEquipments(ResourceTypeStateLineSegment, faultyEquipments, 2)
+
 	// List of CBs to switch to OFF state
-	s.log.Debugf("Need to OFF %+v:[%s]", cbList, s.topology.EquipmentNameByEdgeIdArray(cbList))
+	s.log.Debugf("Need to OFF %+v:[%s]", cbList, s.topologyFlisr.EquipmentNameByEdgeIdArray(cbList))
 
 	for _, cbId := range cbList {
-		equipmentId, err := s.topology.EquipmentIdByEdgeId(cbId)
+		equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId)
 		if err != nil {
 			return err
 		}
 
-		err = s.topology.SetSwitchStateByEquipmentId(equipmentId, 0)
+		err = s.topologyFlisr.SetSwitchStateByEquipmentId(equipmentId, 0)
 		if err != nil {
 			return err
 		}
@@ -572,27 +601,36 @@ func (s *ThisService) SendFlisrAlarmForEquipment(equipmentId int, value int) {
 	}
 }
 
+func (s *ThisService) SendFlisrAlarmForEquipments(resourceType int, equipments map[int]bool, value int) {
+	for equipmentId := range equipments {
+		if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][resourceType]; exists {
+			s.outputQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
+		}
+	}
+}
+
 func (s *ThisService) StateHandler(state sm.State) {
 	switch state {
 	case sm.StateInit:
-		s.alarmProtect = s.alarmProtect[:0]
+		s.alarmProtectBuffer = s.alarmProtectBuffer[:0]
+		s.stateSwitchBuffer = s.stateSwitchBuffer[:0]
+
 	case State2:
 		s.log.Debugf("!!")
 	case State5:
-		s.log.Debugf("Reclosing OK: %+v", s.alarmProtect)
+		s.log.Debugf("Reclosing OK: %+v", s.alarmProtectBuffer)
 	case State6:
-		s.log.Debugf("Reclosing failed: %+v", s.alarmProtect)
+		s.log.Debugf("Reclosing failed: %+v", s.alarmProtectBuffer)
 
 		faultyCBEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
 
 		if faultyCBEquipmentId != 0 {
-
 			err := s.FlisrIsolateEquipment(faultyCBEquipmentId, powerSupplyNodeId)
 			if err != nil {
 				s.log.Errorf("Failed to isolate equipment id %d: %v", faultyCBEquipmentId, err)
 			}
 		} else {
-			s.log.Errorf("Failed to find faulty equipment", faultyCBEquipmentId)
+			s.log.Errorf("Failed to find faulty equipment")
 		}
 	}
 }
@@ -697,7 +735,7 @@ func main() {
 
 	s.log.Infof("Started")
 
-	s.topology.SetEquipmentElectricalState()
+	s.topologyFlisr.SetEquipmentElectricalState()
 
 	go s.CurrentStateWorker()
 

@@ -368,17 +368,19 @@ func (t *TopologyGridStruct) NodeCanBePoweredBy(nodeId int) ([]int, error) {
 	return poweredBy, nil
 }
 
-// GetCircuitBreakersEdgeIdsNextToNode returns an array of circuit breakers id next to the node
-func (t *TopologyGridStruct) GetCircuitBreakersEdgeIdsNextToNode(nodeId int) ([]int, error) {
+// GetCircuitBreakersEdgeIdsNextToNode returns an array of circuit breakers id next to the node and map with visited equipment ids
+func (t *TopologyGridStruct) GetCircuitBreakersEdgeIdsNextToNode(nodeId int) ([]int, map[int]bool, error) {
 	var exists bool
 	var nodeIdx int
 	var edgeCircuitBreakerIdx int
+	var visitedNodes = make(map[int]bool)
+
 	circuitBreakersEdgesId := make([]int, 0)
 
 	nodeIdx, exists = t.nodeIdxFromNodeId[nodeId]
 
 	if !exists {
-		return nil, errors.New(fmt.Sprintf("node idx was not found for node id %d", nodeId))
+		return nil, nil, errors.New(fmt.Sprintf("node idx was not found for node id %d", nodeId))
 	}
 
 	for _, edgeCircuitBreakerId := range t.edgeIdArrayFromEquipmentTypeId[TypeCircuitBreaker] {
@@ -386,7 +388,7 @@ func (t *TopologyGridStruct) GetCircuitBreakersEdgeIdsNextToNode(nodeId int) ([]
 		edgeCircuitBreakerIdx, exists = t.edgeIdxFromEdgeId[edgeCircuitBreakerId]
 
 		if !exists {
-			return nil, errors.New(fmt.Sprintf("node idx was not found for node id %d", nodeId))
+			return nil, nil, errors.New(fmt.Sprintf("node idx was not found for node id %d", nodeId))
 		}
 
 		circuitBreaker := t.edges[edgeCircuitBreakerIdx]
@@ -395,15 +397,23 @@ func (t *TopologyGridStruct) GetCircuitBreakersEdgeIdsNextToNode(nodeId int) ([]
 
 		if len(path) > 0 && pathLen == 0 {
 			circuitBreakersEdgesId = append(circuitBreakersEdgesId, edgeCircuitBreakerId)
+			for _, _nodeIdx := range path {
+				equipmentId := t.nodes[_nodeIdx].equipmentId
+				visitedNodes[equipmentId] = true
+			}
 		} else {
 			path, pathLen = graph.ShortestPath(t.fullGraph, t.nodeIdxFromNodeId[circuitBreaker.terminal.node2Id], nodeIdx)
 			if len(path) > 0 && pathLen == 0 {
 				circuitBreakersEdgesId = append(circuitBreakersEdgesId, edgeCircuitBreakerId)
+				for _, _nodeIdx := range path {
+					equipmentId := t.nodes[_nodeIdx].equipmentId
+					visitedNodes[equipmentId] = true
+				}
 			}
 		}
 	}
 
-	return circuitBreakersEdgesId, nil
+	return circuitBreakersEdgesId, visitedNodes, nil
 }
 
 // BfsFromNodeId traverses current graph in breadth-first order starting at nodeStart
@@ -587,7 +597,7 @@ func (t *TopologyGridStruct) GetFurthestEquipmentFromPower(equipmentIds []int) (
 	return furthestEquipmentId, poweredByNodeId, poweredBy[poweredByNodeId]
 }
 
-// GetFurthestEquipmentNodeIdFromPower returns the farthest (from two) equipment node id from the power source
+// GetFurthestEquipmentNodeIdFromPower returns the farthest (from two) equipment node id (terminal) from the power source
 func (t *TopologyGridStruct) GetFurthestEquipmentNodeIdFromPower(poweredByNodeId int, equipmentId int) int {
 	var furthestNodeId = 0
 	var maxNumberOfSwitches int64 = 0
