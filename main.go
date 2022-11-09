@@ -6,12 +6,12 @@ import (
 	"flag"
 	"flisr/llog"
 	sm "flisr/state_machine"
+	"flisr/topogrid"
 	"flisr/types"
 	"flisr/webapi"
 	"flisr/zmq_bus"
 	"fmt"
 	"github.com/PVKonovalov/localcache"
-	"github.com/PVKonovalov/topogrid"
 	"gopkg.in/ini.v1"
 	"strings"
 	"time"
@@ -111,13 +111,15 @@ type ThisService struct {
 	log                                   *llog.LevelLog
 	config                                ConfigStruct
 	topologyProfile                       *TopologyStruct
+	topology                              *topogrid.TopologyGridStruct
 	equipmentFromEquipmentId              map[int]EquipmentStruct
 	pointFromEquipmentIdAndResourceTypeId map[int]map[int]uint64
-	topology                              *topogrid.TopologyGridStruct
 	resourceStructFromPointId             map[uint64]ResourceStruct
+	equipmentIdArrayFromResourceTypeId    map[int][]int
 	zmq                                   *zmq_bus.ZmqBus
 	outputQueue                           chan types.RtdbMessage
 	inputDataQueue                        chan types.RtdbMessage
+	switchDataQueue                       chan types.RtdbMessage
 	stateMachine                          *sm.StateMachine
 	alarmProtect                          []types.RtdbMessage
 }
@@ -132,6 +134,7 @@ func New() *ThisService {
 		stateMachine:                          sm.New(logger),
 		alarmProtect:                          make([]types.RtdbMessage, 0),
 		pointFromEquipmentIdAndResourceTypeId: make(map[int]map[int]uint64),
+		equipmentIdArrayFromResourceTypeId:    make(map[int][]int),
 	}
 }
 
@@ -376,7 +379,8 @@ func (s *ThisService) CreateInternalParametersFromProfile() {
 		for _, resource := range equipment.Resource {
 			if resource.TypeId == ResourceTypeProtect ||
 				resource.TypeId == ResourceTypeReclosing ||
-				resource.TypeId == ResourceTypeState {
+				resource.TypeId == ResourceTypeState ||
+				resource.TypeId == ResourceTypeStateLineSegment {
 				s.resourceStructFromPointId[resource.PointId] = ResourceStruct{
 					equipmentId:    equipment.Id,
 					resourceTypeId: resource.TypeId,
@@ -386,7 +390,12 @@ func (s *ThisService) CreateInternalParametersFromProfile() {
 					s.pointFromEquipmentIdAndResourceTypeId[equipment.Id] = make(map[int]uint64)
 				}
 				s.pointFromEquipmentIdAndResourceTypeId[equipment.Id][resource.TypeId] = resource.PointId
+
 			}
+			if _, exists := s.equipmentIdArrayFromResourceTypeId[resource.TypeId]; !exists {
+				s.equipmentIdArrayFromResourceTypeId[resource.TypeId] = make([]int, 0)
+			}
+			s.equipmentIdArrayFromResourceTypeId[resource.TypeId] = append(s.equipmentIdArrayFromResourceTypeId[resource.TypeId], equipment.Id)
 		}
 	}
 }
@@ -422,6 +431,39 @@ func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
 	}
 }
 
+// CurrentStateWorker calculates current topology and sends state of SLD elements
+func (s *ThisService) CurrentStateWorker() {
+	for point := range s.switchDataQueue {
+		if resource, exists := s.resourceStructFromPointId[point.Id]; exists {
+			err := s.topology.SetSwitchStateByEquipmentId(resource.equipmentId, int(point.Value))
+			if err != nil {
+				s.log.Errorf("Failed to change state: %v", err)
+				continue
+			}
+
+			s.topology.SetEquipmentElectricalState()
+
+			for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
+				if newElectricalState, exists := s.topology.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
+					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeStateLineSegment]; exists {
+						s.log.Debugf("%d:%d->%d", equipmentId, newElectricalState, pointId)
+
+						var electricalState float32 = 1
+
+						if newElectricalState&topogrid.StateEnergized == topogrid.StateEnergized {
+							electricalState = 0
+						}
+
+						s.outputQueue <- types.RtdbMessage{Id: pointId, Value: electricalState}
+					}
+				}
+
+			}
+		}
+
+	}
+}
+
 func (s *ThisService) ReceiveDataWorker() {
 	var err error
 	for point := range s.inputDataQueue {
@@ -430,6 +472,9 @@ func (s *ThisService) ReceiveDataWorker() {
 		switch resource.resourceTypeId {
 		case ResourceTypeState:
 			s.log.Debugf("State: %s", point)
+
+			// For current state calculating
+			s.switchDataQueue <- point
 
 			err = s.stateMachine.NextState(resource.resourceTypeId)
 		case ResourceTypeProtect:
@@ -443,8 +488,8 @@ func (s *ThisService) ReceiveDataWorker() {
 				s.log.Debugf("Reclosing: %s", point)
 				err = s.stateMachine.NextState(resource.resourceTypeId)
 			}
-		default:
-			s.log.Errorf("Unknown resource type: %s", point)
+			//default:
+			//	s.log.Errorf("Unknown resource type: %s", point)
 		}
 
 		if err != nil {
@@ -591,6 +636,7 @@ func main() {
 
 	s.outputQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
+	s.switchDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 
 	logLevel, err := llog.ParseLevel(s.config.logLevel)
 	if err != nil {
@@ -647,10 +693,13 @@ func main() {
 	}
 
 	go s.ReceiveDataWorker()
+	go s.OutputMessageWorker()
 
 	s.log.Infof("Started")
 
 	s.topology.SetEquipmentElectricalState()
+
+	go s.CurrentStateWorker()
 
 	err = s.zmq.WaitingLoop()
 
