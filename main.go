@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"flisr/llog"
+	"flisr/message"
 	sm "flisr/state_machine"
 	"flisr/topogrid"
 	"flisr/types"
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"github.com/PVKonovalov/localcache"
 	"gopkg.in/ini.v1"
+	"os"
 	"strings"
 	"time"
 )
@@ -53,6 +55,7 @@ type ConfigStruct struct {
 	zmqRtdb                  string
 	zmqRtdbCommand           string
 	zmqRtdbInput             string
+	zmqAlarmMessage          string
 	jobQueueLength           int
 	arcDelayMsec             time.Duration
 	rtdbPointFlisrState      uint64
@@ -118,12 +121,15 @@ type ThisService struct {
 	resourceStructFromPointId             map[uint64]ResourceStruct
 	equipmentIdArrayFromResourceTypeId    map[int][]int
 	zmq                                   *zmq_bus.ZmqBus
-	outputQueue                           chan types.RtdbMessage
+	outputEventQueue                      chan types.RtdbMessage
 	inputDataQueue                        chan types.RtdbMessage
 	switchDataQueue                       chan types.RtdbMessage
+	outputMessageQueue                    chan message.OutputMessageStruct
 	stateMachine                          *sm.StateMachine
 	alarmProtectBuffer                    []types.RtdbMessage
 	stateSwitchBuffer                     []types.RtdbMessage
+	rtdbPublisherIdx                      int
+	messagePublisherIdx                   int
 }
 
 // New service
@@ -156,6 +162,7 @@ func (s *ThisService) ReadConfig(configFile string) error {
 	s.config.zmqRtdb = cfg.Section("BUSES").Key("ZMQ_RTDB_OUTPUT_POINT").String()
 	s.config.zmqRtdbCommand = cfg.Section("BUSES").Key("ZMQ_RTDB_COMMAND_POINT").String()
 	s.config.zmqRtdbInput = cfg.Section("BUSES").Key("ZMQ_RTDB_INPUT_POINT").String()
+	s.config.zmqAlarmMessage = cfg.Section("SLD_BRIDGE").Key("ZMQ_ALARM_MESSAGE_POINT").String()
 
 	s.config.logLevel = cfg.Section("FLISR").Key("LOG").String()
 	s.config.jobQueueLength, err = cfg.Section("FLISR").Key("QUEUE").Int()
@@ -435,12 +442,12 @@ func (s *ThisService) LoadTopologyGrid() error {
 
 func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
 	for _, data := range msg {
-		message, err := types.ParseScadaRtdbData([]byte(data))
+		_message, err := types.ParseScadaRtdbData([]byte(data))
 		if err != nil {
 			s.log.Errorf("Failed to parse incoming data (%s): %v", data, err)
 			continue
 		}
-		for _, point := range message {
+		for _, point := range _message {
 			if _, exists := s.resourceStructFromPointId[point.Id]; exists {
 				s.inputDataQueue <- point
 			}
@@ -471,7 +478,7 @@ func (s *ThisService) CurrentStateWorker() {
 							electricalState = 0
 						}
 
-						s.outputQueue <- types.RtdbMessage{Id: pointId, Value: electricalState}
+						s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: electricalState}
 					}
 				}
 
@@ -525,24 +532,42 @@ func (s *ThisService) ReceiveDataWorker() {
 	}
 }
 
-func (s *ThisService) OutputMessageWorker() {
-	for message := range s.outputQueue {
+func (s *ThisService) OutputEventWorker() {
+	for event := range s.outputEventQueue {
 
-		message.Timestamp.Time = time.Now()
-		message.TimestampRecv.Time = time.Now()
-		message.Quality = 0
-		message.Source = s.config.pointSource
+		event.Timestamp.Time = time.Now()
+		event.TimestampRecv.Time = time.Now()
+		event.Quality = 0
+		event.Source = s.config.pointSource
 
-		s.log.Debugf("O: %+v", message)
+		s.log.Debugf("O: %+v", event)
 
-		data, err := json.Marshal([]types.RtdbMessage{message})
+		data, err := json.Marshal([]types.RtdbMessage{event})
 		if err != nil {
-			s.log.Fatalf("Failed to marshal (%+v): %v", message, err)
+			s.log.Fatalf("Failed to marshal (%+v): %v", event, err)
 		}
 
-		_, err = s.zmq.Send(0, data)
+		_, err = s.zmq.Send(s.rtdbPublisherIdx, data)
 		if err != nil {
-			s.log.Fatalf("Failed to send message (%+v): %v", message, err)
+			s.log.Fatalf("Failed to send event (%+v): %v", event, err)
+		}
+	}
+}
+
+func (s *ThisService) OutputMessageWorker() {
+
+	for _message := range s.outputMessageQueue {
+
+		s.log.Debugf("M: %+v", _message)
+
+		data, err := json.Marshal([]message.OutputMessageStruct{_message})
+		if err != nil {
+			fmt.Printf("Failed to marshal (%+v): %v", _message, err)
+		}
+
+		_, err = s.zmq.Send(s.messagePublisherIdx, data)
+		if err != nil {
+			fmt.Printf("Failed to send message (%+v): %v", _message, err)
 		}
 	}
 }
@@ -577,6 +602,8 @@ func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupply
 
 	s.SendFlisrAlarmForEquipments(ResourceTypeStateLineSegment, faultyEquipments, 2)
 
+	s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-red", "Fault")
+
 	// List of CBs to switch to OFF state
 	s.log.Debugf("Need to OFF %+v:[%s]", cbList, s.topologyFlisr.EquipmentNameByEdgeIdArray(cbList))
 
@@ -594,17 +621,34 @@ func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupply
 	return nil
 }
 
+func (s *ThisService) SendFlisrMessageForEquipment(equipmentId int, class string, text string) {
+	equipment := s.equipmentFromEquipmentId[equipmentId]
+	_message := message.New()
+	_message.CreateMessage(class, equipment.Name, text)
+	s.outputMessageQueue <- *_message
+}
+
+func (s *ThisService) SendFlisrMessageForEquipments(equipments map[int]bool, class string, text string) {
+	_message := message.New()
+
+	for equipmentId := range equipments {
+		equipment := s.equipmentFromEquipmentId[equipmentId]
+		_message.CreateMessage(class, equipment.Name, text)
+		s.outputMessageQueue <- *_message
+	}
+}
+
 func (s *ThisService) SendFlisrAlarmForEquipment(equipmentId int, value int) {
 
 	if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeState]; exists {
-		s.outputQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
+		s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
 	}
 }
 
 func (s *ThisService) SendFlisrAlarmForEquipments(resourceType int, equipments map[int]bool, value int) {
 	for equipmentId := range equipments {
 		if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][resourceType]; exists {
-			s.outputQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
+			s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
 		}
 	}
 }
@@ -672,9 +716,10 @@ func main() {
 		s.log.Fatalf("Failed to read configuration %s: %v", configFile, err)
 	}
 
-	s.outputQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
+	s.outputEventQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.switchDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
+	s.outputMessageQueue = make(chan message.OutputMessageStruct, s.config.jobQueueLength)
 
 	logLevel, err := llog.ParseLevel(s.config.logLevel)
 	if err != nil {
@@ -710,7 +755,7 @@ func main() {
 		s.log.Fatalf("Failed to configure state machine: %v", err)
 	}
 
-	s.zmq, err = zmq_bus.New(1, 1)
+	s.zmq, err = zmq_bus.New(1, 2)
 
 	if err != nil {
 		s.log.Fatalf("Failed to create zmq context: %v", err)
@@ -724,14 +769,23 @@ func main() {
 
 	s.zmq.SetReceiveHandler(idx, s.ZmqReceiveDataHandler)
 
-	_, err = s.zmq.AddPublisher(s.config.zmqRtdbInput)
+	s.rtdbPublisherIdx, err = s.zmq.AddPublisher(s.config.zmqRtdbInput)
 
 	if err != nil {
-		s.log.Fatalf("Failed to add zmq publisher [%s]: %v", s.config.zmqRtdbInput, err)
+		fmt.Printf("Failed to add zmq event publisher [%s]: %v\n", s.config.zmqRtdbInput, err)
+		os.Exit(1)
+	}
+
+	s.messagePublisherIdx, err = s.zmq.AddPublisher(s.config.zmqAlarmMessage)
+
+	if err != nil {
+		fmt.Printf("Failed to add zmq message publisher [%s]: %v\n", s.config.zmqAlarmMessage, err)
+		os.Exit(1)
 	}
 
 	go s.ReceiveDataWorker()
 	go s.OutputMessageWorker()
+	go s.OutputEventWorker()
 
 	s.log.Infof("Started")
 
