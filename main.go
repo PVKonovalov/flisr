@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"github.com/PVKonovalov/localcache"
 	"gopkg.in/ini.v1"
-	"os"
 	"strings"
 	"time"
 )
@@ -139,7 +138,6 @@ func New() *ThisService {
 		log:                                   logger,
 		equipmentFromEquipmentId:              make(map[int]EquipmentStruct),
 		resourceStructFromPointId:             make(map[uint64]ResourceStruct),
-		stateMachine:                          sm.New(logger),
 		alarmProtectBuffer:                    make([]types.RtdbMessage, 0),
 		pointFromEquipmentIdAndResourceTypeId: make(map[int]map[int]uint64),
 		equipmentIdArrayFromResourceTypeId:    make(map[int][]int),
@@ -205,8 +203,8 @@ func ParseEquipmentData(data []byte) (*[]EquipmentStruct, error) {
 	return &equipmentStructs, err
 }
 
-// LoadTopology Loading topologyProfile from configs.configAPIHostList
-func (s *ThisService) LoadTopology(timeoutSec time.Duration, isLoadFromCache bool, cachePath string) error {
+// LoadTopologyConfuguration Loading topologyProfile from configs.configAPIHostList
+func (s *ThisService) LoadTopologyConfuguration(timeoutSec time.Duration, isLoadFromCache bool, cachePath string) error {
 	var topologyData []byte
 
 	cache := localcache.New(cachePath)
@@ -702,8 +700,7 @@ func (s *ThisService) InitStateMachine() error {
 }
 
 func main() {
-	s := New()
-	s.stateMachine.StateHandler = s.StateHandler
+	var err error
 	var configFile string
 	var isLoadFromCache bool
 
@@ -711,76 +708,63 @@ func main() {
 	flag.BoolVar(&isLoadFromCache, "cache", false, "load profile from local cache")
 	flag.Parse()
 
-	err := s.ReadConfig(configFile)
-	if err != nil {
+	s := New()
+
+	if err = s.ReadConfig(configFile); err != nil {
 		s.log.Fatalf("Failed to read configuration %s: %v", configFile, err)
 	}
 
+	s.stateMachine = sm.New(s.log, s.StateHandler)
 	s.outputEventQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.switchDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.outputMessageQueue = make(chan message.OutputMessageStruct, s.config.jobQueueLength)
 
-	logLevel, err := llog.ParseLevel(s.config.logLevel)
-	if err != nil {
-		s.log.Errorf("Failed to parse log level (%s): %v", s.config.logLevel, err)
-		s.log.SetLevel(llog.WarnLevel)
-	} else {
-		s.log.SetLevel(logLevel)
+	var logLevel llog.Level
+
+	if logLevel, err = llog.ParseLevel(s.config.logLevel, llog.WarnLevel); err != nil {
+		s.log.Errorf("Failed to parse log level: %v", err)
 	}
+
+	s.log.SetLevel(logLevel)
 
 	s.log.Infof("Log level: %s", s.log.GetLevel().UpperString())
 
-	err = s.LoadTopology(time.Second*180, isLoadFromCache, "cache/flisr-topology.json")
-
-	if err != nil {
+	if err = s.LoadTopologyConfuguration(time.Second*180, isLoadFromCache, "cache/flisr-topology.json"); err != nil {
 		s.log.Fatalf("Failed to load topology profile: %v", err)
 	}
 
-	err = s.LoadEquipment(time.Second*180, isLoadFromCache, "cache/flisr-equipment.json")
-
-	if err != nil {
+	if err = s.LoadEquipment(time.Second*180, isLoadFromCache, "cache/flisr-equipment.json"); err != nil {
 		s.log.Fatalf("Failed to load equipment profile: %v", err)
 	}
 
 	s.CreateInternalParametersFromProfile()
 
-	err = s.LoadTopologyGrid()
-	if err != nil {
+	if err = s.LoadTopologyGrid(); err != nil {
 		s.log.Fatalf("Failed to load topology: %v", err)
 	}
 
-	err = s.InitStateMachine()
-	if err != nil {
+	if err = s.InitStateMachine(); err != nil {
 		s.log.Fatalf("Failed to configure state machine: %v", err)
 	}
 
-	s.zmq, err = zmq_bus.New(1, 2)
-
-	if err != nil {
+	if s.zmq, err = zmq_bus.New(1, 2); err != nil {
 		s.log.Fatalf("Failed to create zmq context: %v", err)
 	}
 
-	idx, err := s.zmq.AddSubscriber(s.config.zmqRtdb)
-
-	if err != nil {
-		s.log.Fatalf("Failed to add zmq subscriber (%s): %v", s.config.zmqRtdb, err)
+	var subscriberIdx int
+	if subscriberIdx, err = s.zmq.AddSubscriber(s.config.zmqRtdb); err != nil {
+		s.log.Fatalf("Failed to add zmq subscriber [%s]: %v", s.config.zmqRtdb, err)
 	}
 
-	s.zmq.SetReceiveHandler(idx, s.ZmqReceiveDataHandler)
+	s.zmq.SetReceiveHandler(subscriberIdx, s.ZmqReceiveDataHandler)
 
-	s.rtdbPublisherIdx, err = s.zmq.AddPublisher(s.config.zmqRtdbInput)
-
-	if err != nil {
-		fmt.Printf("Failed to add zmq event publisher [%s]: %v\n", s.config.zmqRtdbInput, err)
-		os.Exit(1)
+	if s.rtdbPublisherIdx, err = s.zmq.AddPublisher(s.config.zmqRtdbInput); err != nil {
+		s.log.Fatalf("Failed to add zmq event publisher [%s]: %v", s.config.zmqRtdbInput, err)
 	}
 
-	s.messagePublisherIdx, err = s.zmq.AddPublisher(s.config.zmqAlarmMessage)
-
-	if err != nil {
-		fmt.Printf("Failed to add zmq message publisher [%s]: %v\n", s.config.zmqAlarmMessage, err)
-		os.Exit(1)
+	if s.messagePublisherIdx, err = s.zmq.AddPublisher(s.config.zmqAlarmMessage); err != nil {
+		s.log.Fatalf("Failed to add zmq message publisher [%s]: %v", s.config.zmqAlarmMessage, err)
 	}
 
 	go s.ReceiveDataWorker()
@@ -795,5 +779,5 @@ func main() {
 
 	err = s.zmq.WaitingLoop()
 
-	s.log.Errorf("Stopped with error: %v", err)
+	s.log.Errorf("Stopped: %v", err)
 }

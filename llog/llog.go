@@ -72,7 +72,7 @@ func (level Level) UpperString() string {
 }
 
 // ParseLevel takes a string level and returns the log level constant
-func ParseLevel(level string) (Level, error) {
+func ParseLevel(level string, levelDefault Level) (Level, error) {
 	switch strings.ToLower(level) {
 	case "error":
 		return ErrorLevel, nil
@@ -82,10 +82,9 @@ func ParseLevel(level string) (Level, error) {
 		return InfoLevel, nil
 	case "debug":
 		return DebugLevel, nil
+	default:
+		return levelDefault, fmt.Errorf("nwrong log level: %q uses: %q", level, levelDefault)
 	}
-
-	var l Level
-	return l, fmt.Errorf("not a valid log Level: %q", level)
 }
 
 func (level Level) MarshalText() ([]byte, error) {
@@ -105,7 +104,7 @@ func (level Level) MarshalText() ([]byte, error) {
 
 // UnmarshalText implements encoding.TextUnmarshaler
 func (level *Level) UnmarshalText(text []byte) error {
-	l, err := ParseLevel(string(text))
+	l, err := ParseLevel(string(text), WarnLevel)
 	if err != nil {
 		return err
 	}

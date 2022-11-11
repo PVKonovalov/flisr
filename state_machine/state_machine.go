@@ -29,16 +29,17 @@ type StateMachine struct {
 	curState     State
 	stateMatrix  StateMatrix
 	timer        *time.Timer
-	StateHandler func(State)
+	stateHandler func(State)
 	log          logging
 }
 
-func New(logger logging) *StateMachine {
+func New(logger logging, stateHandler func(state State)) *StateMachine {
 	return &StateMachine{
-		curState:    StateInit,
-		stateMatrix: make(StateMatrix),
-		timer:       nil,
-		log:         logger,
+		curState:     StateInit,
+		stateMatrix:  make(StateMatrix),
+		timer:        nil,
+		log:          logger,
+		stateHandler: stateHandler,
 	}
 }
 
@@ -59,7 +60,9 @@ func (s *StateMachine) MoveToState(newState State) error {
 		if state.conditionTimeoutMs != 0 && state.nextStateByTimeout != StateNil {
 			s.timer = time.AfterFunc(state.conditionTimeoutMs*time.Millisecond, s.timeoutWorker)
 		}
-		s.StateHandler(newState)
+
+		s.stateHandler(newState)
+
 		if nextState := s.unconditionalMoveTo(); nextState != StateNil {
 			return s.MoveToState(nextState)
 		}
