@@ -20,6 +20,11 @@ import (
 
 const ApiGetTopology = "/api/topology/graph"
 const ApiGetEquipment = "/api/equipment"
+const ApiTimeoutSec = 60
+
+const ResourceStateGood = 0
+const ResourceStateIsolated = 1
+const ResourceStateFault = 2
 
 // Resource Types
 const (
@@ -44,7 +49,7 @@ const (
 	State7             sm.State = 7
 )
 
-// ConfigStruct Structure with current Scada configuration
+// ConfigStruct from FLISR configuration file
 type ConfigStruct struct {
 	username                 string
 	password                 string
@@ -131,7 +136,7 @@ type ThisService struct {
 	messagePublisherIdx                   int
 }
 
-// New service
+// New FLISR service
 func New() *ThisService {
 	logger := llog.NewLevelLog(llog.Ldate | llog.Ltime | llog.Lmicroseconds)
 	return &ThisService{
@@ -145,10 +150,12 @@ func New() *ThisService {
 	}
 }
 
-// ReadConfig from configFile path
+// ReadConfig from FLISR configuration file
 func (s *ThisService) ReadConfig(configFile string) error {
-	cfg, err := ini.Load(configFile)
-	if err != nil {
+	var cfg *ini.File
+	var err error
+
+	if cfg, err = ini.Load(configFile); err != nil {
 		return err
 	}
 
@@ -160,31 +167,27 @@ func (s *ThisService) ReadConfig(configFile string) error {
 	s.config.zmqRtdb = cfg.Section("BUSES").Key("ZMQ_RTDB_OUTPUT_POINT").String()
 	s.config.zmqRtdbCommand = cfg.Section("BUSES").Key("ZMQ_RTDB_COMMAND_POINT").String()
 	s.config.zmqRtdbInput = cfg.Section("BUSES").Key("ZMQ_RTDB_INPUT_POINT").String()
+
 	s.config.zmqAlarmMessage = cfg.Section("SLD_BRIDGE").Key("ZMQ_ALARM_MESSAGE_POINT").String()
 
 	s.config.logLevel = cfg.Section("FLISR").Key("LOG").String()
-	s.config.jobQueueLength, err = cfg.Section("FLISR").Key("QUEUE").Int()
-	if err != nil {
+	if s.config.jobQueueLength, err = cfg.Section("FLISR").Key("QUEUE").Int(); err != nil {
 		s.config.jobQueueLength = 100
 	}
 
-	delay, err := cfg.Section("FLISR").Key("ARC_DELAY_MSEC").Int()
-	if err != nil {
-		s.config.arcDelayMsec = 5000
-	} else {
+	var delay int
+	s.config.arcDelayMsec = 5000
+	if delay, err = cfg.Section("FLISR").Key("ARC_DELAY_MSEC").Int(); err == nil {
 		s.config.arcDelayMsec = time.Duration(delay)
 	}
 
 	var pointSource uint64
-
-	pointSource, err = cfg.Section("FLISR").Key("POINT_SOURCE").Uint64()
-	s.config.pointSource = uint32(pointSource)
-	if err != nil {
-		s.config.pointSource = 0
+	s.config.pointSource = 0
+	if pointSource, err = cfg.Section("FLISR").Key("POINT_SOURCE").Uint64(); err == nil {
+		s.config.pointSource = uint32(pointSource)
 	}
 
-	s.config.rtdbPointFlisrState, err = cfg.Section("FLISR").Key("RTDB_POINT_FLISR_STATE").Uint64()
-	if err != nil {
+	if s.config.rtdbPointFlisrState, err = cfg.Section("FLISR").Key("RTDB_POINT_FLISR_STATE").Uint64(); err != nil {
 		s.config.rtdbPointFlisrState = 0
 	}
 
@@ -203,8 +206,8 @@ func ParseEquipmentData(data []byte) (*[]EquipmentStruct, error) {
 	return &equipmentStructs, err
 }
 
-// LoadTopologyConfuguration Loading topologyProfile from configs.configAPIHostList
-func (s *ThisService) LoadTopologyConfuguration(timeoutSec time.Duration, isLoadFromCache bool, cachePath string) error {
+// LoadTopologyProfile Loading topologyProfile from configs.configAPIHostList
+func (s *ThisService) LoadTopologyProfile(timeoutSec time.Duration, isLoadFromCache bool, cachePath string) error {
 	var topologyData []byte
 
 	cache := localcache.New(cachePath)
@@ -285,8 +288,8 @@ func (s *ThisService) LoadTopologyConfuguration(timeoutSec time.Duration, isLoad
 	return resultErr
 }
 
-// LoadEquipment Loading equipment from config.ConfigAPIHostList
-func (s *ThisService) LoadEquipment(timeoutSec time.Duration, isLoadFromCache bool, cachePath string) error {
+// LoadEquipmentProfile Loading equipment from config.ConfigAPIHostList
+func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromCache bool, cachePath string) error {
 	var equipmentData []byte
 	var equipments *[]EquipmentStruct
 
@@ -382,7 +385,7 @@ func (s *ThisService) LoadEquipment(timeoutSec time.Duration, isLoadFromCache bo
 	return resultErr
 }
 
-func (s *ThisService) CreateInternalParametersFromProfile() {
+func (s *ThisService) CreateInternalParametersFromProfiles() {
 	for _, equipment := range s.equipmentFromEquipmentId {
 		for _, resource := range equipment.Resource {
 			if resource.TypeId == ResourceTypeProtect ||
@@ -416,8 +419,7 @@ func (s *ThisService) LoadTopologyGrid() error {
 	}
 
 	for _, edge := range s.topologyProfile.Edge {
-		err := s.topologyFlisr.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName)
-		if err != nil {
+		if err := s.topologyFlisr.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName); err != nil {
 			return err
 		}
 	}
@@ -429,8 +431,7 @@ func (s *ThisService) LoadTopologyGrid() error {
 	}
 
 	for _, edge := range s.topologyProfile.Edge {
-		err := s.topologyGrid.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName)
-		if err != nil {
+		if err := s.topologyGrid.AddEdge(edge.Id, edge.Terminal1, edge.Terminal2, edge.StateNormal, edge.EquipmentId, edge.EquipmentTypeId, edge.EquipmentName); err != nil {
 			return err
 		}
 	}
@@ -457,8 +458,7 @@ func (s *ThisService) ZmqReceiveDataHandler(msg []string) {
 func (s *ThisService) CurrentStateWorker() {
 	for point := range s.switchDataQueue {
 		if resource, exists := s.resourceStructFromPointId[point.Id]; exists {
-			err := s.topologyGrid.SetSwitchStateByEquipmentId(resource.equipmentId, int(point.Value))
-			if err != nil {
+			if err := s.topologyGrid.SetSwitchStateByEquipmentId(resource.equipmentId, int(point.Value)); err != nil {
 				s.log.Errorf("Failed to change state: %v", err)
 				continue
 			}
@@ -470,19 +470,21 @@ func (s *ThisService) CurrentStateWorker() {
 					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeStateLineSegment]; exists {
 						s.log.Debugf("%d:%d->%d", equipmentId, newElectricalState, pointId)
 
-						var electricalState float32 = 1
+						var electricalState float32 = ResourceStateIsolated
 
 						if newElectricalState&topogrid.StateEnergized == topogrid.StateEnergized {
-							electricalState = 0
+							electricalState = ResourceStateGood
+						} else if newElectricalState&topogrid.StateIsolated == topogrid.StateIsolated {
+							electricalState = ResourceStateIsolated
+						} else if newElectricalState&topogrid.StateFault == topogrid.StateFault {
+							electricalState = ResourceStateFault
 						}
 
 						s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: electricalState}
 					}
 				}
-
 			}
 		}
-
 	}
 }
 
@@ -542,30 +544,33 @@ func (s *ThisService) OutputEventWorker() {
 
 		data, err := json.Marshal([]types.RtdbMessage{event})
 		if err != nil {
-			s.log.Fatalf("Failed to marshal (%+v): %v", event, err)
+			s.log.Errorf("Failed to marshal (%+v): %v", event, err)
+			continue
 		}
 
 		_, err = s.zmq.Send(s.rtdbPublisherIdx, data)
 		if err != nil {
-			s.log.Fatalf("Failed to send event (%+v): %v", event, err)
+			s.log.Errorf("Failed to send event (%+v): %v", event, err)
+			continue
 		}
 	}
 }
 
 func (s *ThisService) OutputMessageWorker() {
-
 	for _message := range s.outputMessageQueue {
 
 		s.log.Debugf("M: %+v", _message)
 
 		data, err := json.Marshal([]message.OutputMessageStruct{_message})
 		if err != nil {
-			fmt.Printf("Failed to marshal (%+v): %v", _message, err)
+			s.log.Errorf("Failed to marshal (%+v): %v", _message, err)
+			continue
 		}
 
 		_, err = s.zmq.Send(s.messagePublisherIdx, data)
 		if err != nil {
-			fmt.Printf("Failed to send message (%+v): %v", _message, err)
+			s.log.Errorf("Failed to send message (%+v): %v", _message, err)
+			continue
 		}
 	}
 }
@@ -598,24 +603,29 @@ func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupply
 		return err
 	}
 
-	s.SendFlisrAlarmForEquipments(ResourceTypeStateLineSegment, faultyEquipments, 2)
+	s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
+	s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", "Авария")
 
-	s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-red", "Fault")
+	for _, cbId := range cbList {
+		if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
+			s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Отключить")
+		}
+	}
 
 	// List of CBs to switch to OFF state
 	s.log.Debugf("Need to OFF %+v:[%s]", cbList, s.topologyFlisr.EquipmentNameByEdgeIdArray(cbList))
 
-	for _, cbId := range cbList {
-		equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId)
-		if err != nil {
-			return err
-		}
-
-		err = s.topologyFlisr.SetSwitchStateByEquipmentId(equipmentId, 0)
-		if err != nil {
-			return err
-		}
-	}
+	//for _, cbId := range cbList {
+	//	equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId)
+	//	if err != nil {
+	//		return err
+	//	}
+	//
+	//	err = s.topologyFlisr.SetSwitchStateByEquipmentId(equipmentId, 0)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 	return nil
 }
 
@@ -643,7 +653,7 @@ func (s *ThisService) SendFlisrAlarmForEquipment(equipmentId int, value int) {
 	}
 }
 
-func (s *ThisService) SendFlisrAlarmForEquipments(resourceType int, equipments map[int]bool, value int) {
+func (s *ThisService) SendFlisrAlarmForEquipments(equipments map[int]bool, resourceType int, value int) {
 	for equipmentId := range equipments {
 		if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][resourceType]; exists {
 			s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
@@ -677,9 +687,7 @@ func (s *ThisService) StateHandler(state sm.State) {
 	}
 }
 
-func (s *ThisService) InitStateMachine() error {
-	var err error = nil
-
+func (s *ThisService) InitStateMachine() {
 	s.stateMachine.AddState(sm.StateInit, sm.StateList{ResourceTypeProtect: StateAlarmReceived})
 	s.stateMachine.AddStateWithTimeout(StateAlarmReceived,
 		sm.StateList{
@@ -693,10 +701,6 @@ func (s *ThisService) InitStateMachine() error {
 	s.stateMachine.AddState(State6, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
 
 	s.stateMachine.Start(sm.StateInit)
-
-	// fmt.Printf("%s", s.stateMachine.GetAsGraphMl())
-
-	return err
 }
 
 func main() {
@@ -730,23 +734,21 @@ func main() {
 
 	s.log.Infof("Log level: %s", s.log.GetLevel().UpperString())
 
-	if err = s.LoadTopologyConfuguration(time.Second*180, isLoadFromCache, "cache/flisr-topology.json"); err != nil {
+	if err = s.LoadTopologyProfile(time.Second*ApiTimeoutSec, isLoadFromCache, "cache/flisr-topology.json"); err != nil {
 		s.log.Fatalf("Failed to load topology profile: %v", err)
 	}
 
-	if err = s.LoadEquipment(time.Second*180, isLoadFromCache, "cache/flisr-equipment.json"); err != nil {
+	if err = s.LoadEquipmentProfile(time.Second*ApiTimeoutSec, isLoadFromCache, "cache/flisr-equipment.json"); err != nil {
 		s.log.Fatalf("Failed to load equipment profile: %v", err)
 	}
 
-	s.CreateInternalParametersFromProfile()
+	s.CreateInternalParametersFromProfiles()
 
 	if err = s.LoadTopologyGrid(); err != nil {
 		s.log.Fatalf("Failed to load topology: %v", err)
 	}
 
-	if err = s.InitStateMachine(); err != nil {
-		s.log.Fatalf("Failed to configure state machine: %v", err)
-	}
+	s.InitStateMachine()
 
 	if s.zmq, err = zmq_bus.New(1, 2); err != nil {
 		s.log.Fatalf("Failed to create zmq context: %v", err)
@@ -774,6 +776,8 @@ func main() {
 	s.log.Infof("Started")
 
 	s.topologyFlisr.SetEquipmentElectricalState()
+
+	// fmt.Printf("%s\n", s.topologyFlisr.GetAsGraphMl())
 
 	go s.CurrentStateWorker()
 
