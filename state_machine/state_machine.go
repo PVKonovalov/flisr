@@ -51,7 +51,7 @@ func (s *StateMachine) AddStateWithTimeout(newState State, nextState StateList, 
 	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, conditionTimeoutMs: timeoutMs, nextStateByTimeout: nextStateByTimeout}
 }
 
-func (s *StateMachine) MoveToState(newState State) error {
+func (s *StateMachine) moveToState(newState State) error {
 
 	s.log.Debugf("%d->%d", s.curState, newState)
 
@@ -63,8 +63,8 @@ func (s *StateMachine) MoveToState(newState State) error {
 
 		s.stateHandler(newState)
 
-		if nextState := s.unconditionalMoveTo(); nextState != StateNil {
-			return s.MoveToState(nextState)
+		if nextState := s.getUnconditionalNextState(); nextState != StateNil {
+			return s.moveToState(nextState)
 		}
 	} else {
 		return fmt.Errorf("next state %d was not found for state ", newState)
@@ -72,7 +72,7 @@ func (s *StateMachine) MoveToState(newState State) error {
 	return nil
 }
 
-func (s *StateMachine) unconditionalMoveTo() State {
+func (s *StateMachine) getUnconditionalNextState() State {
 	if state, exists := s.stateMatrix[s.curState]; exists {
 		if nextState, exists := state.nextState[0]; exists {
 			return nextState
@@ -88,7 +88,7 @@ func (s *StateMachine) NextState(condition int) error {
 		if s.timer != nil {
 			s.timer.Stop()
 		}
-		return s.MoveToState(nextState)
+		return s.moveToState(nextState)
 	} else {
 		return fmt.Errorf("next state was not found for state %d and condition %d", s.curState, condition)
 	}
@@ -100,7 +100,7 @@ func (s *StateMachine) Start(state State) {
 
 func (s *StateMachine) timeoutWorker() {
 	state := s.stateMatrix[s.curState]
-	_ = s.MoveToState(state.nextStateByTimeout)
+	_ = s.moveToState(state.nextStateByTimeout)
 }
 
 func (s *StateMachine) GetAsGraphMl() string {
