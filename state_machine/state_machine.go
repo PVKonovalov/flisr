@@ -2,6 +2,8 @@ package state_machine
 
 import (
 	"fmt"
+	"gopkg.in/yaml.v3"
+	"os"
 	"time"
 )
 
@@ -10,6 +12,23 @@ type logging interface {
 }
 
 type State int
+
+type NextStateMap struct {
+	States map[string]State
+}
+
+type Configuration struct {
+	State              State        `yaml:"state"`
+	NextState          NextStateMap `yaml:"nextState,omitempty"`
+	ConditionTimeoutMs int          `yaml:"conditionTimeoutMs,omitempty"`
+	NextStateByTimeout int          `yaml:"nextStateByTimeout,omitempty"`
+	Out                string       `yaml:"out,omitempty"`
+}
+
+// UnmarshalYAML is used to unmarshal into map[string]string
+func (b *NextStateMap) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	return unmarshal(&b.States)
+}
 
 // StateList [condition] -> state
 type StateList map[int]State
@@ -33,6 +52,31 @@ type StateMachine struct {
 	log          logging
 }
 
+func ResourceTypeFromString(resourceTypeName string) int {
+	switch resourceTypeName {
+	case "ResourceTypeIsNotDefine":
+		return 0
+	case "ResourceTypeMeasure":
+		return 1
+	case "ResourceTypeState":
+		return 2
+	case "ResourceTypeControl":
+		return 3
+	case "ResourceTypeProtect":
+		return 4
+	case "ResourceTypeLink":
+		return 5
+	case "ResourceTypeChangeSetGroup":
+		return 6
+	case "ResourceTypeReclosing":
+		return 7
+	case "ResourceTypeStateLineSegment":
+		return 8
+	default:
+		return 0
+	}
+}
+
 func New(logger logging, stateHandler func(state State)) *StateMachine {
 	return &StateMachine{
 		curState:     StateInit,
@@ -41,6 +85,30 @@ func New(logger logging, stateHandler func(state State)) *StateMachine {
 		log:          logger,
 		stateHandler: stateHandler,
 	}
+}
+
+func (s *StateMachine) LoadConfiguration(configurationFile string) error {
+	var config []Configuration
+
+	f, err := os.Open(configurationFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	decoder := yaml.NewDecoder(f)
+	err = decoder.Decode(&config)
+	if err != nil {
+		return err
+	}
+
+	for _, state := range config {
+		for _, resourse := range state.NextState.States {
+			resourceTypeId := ResourceTypeFromString()
+		}
+	}
+
+	return nil
 }
 
 func (s *StateMachine) AddState(newState State, nextState StateList) {

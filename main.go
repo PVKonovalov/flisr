@@ -688,19 +688,27 @@ func (s *ThisService) StateHandler(state sm.State) {
 }
 
 func (s *ThisService) InitStateMachine() {
-	s.stateMachine.AddState(sm.StateInit, sm.StateList{ResourceTypeProtect: StateAlarmReceived})
-	s.stateMachine.AddStateWithTimeout(StateAlarmReceived,
-		sm.StateList{
-			ResourceTypeProtect: StateAlarmReceived,
-			ResourceTypeState:   State3,
-		}, s.config.arcDelayMsec, State2)
 
-	s.stateMachine.AddState(State2, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddStateWithTimeout(State3, sm.StateList{ResourceTypeReclosing: State5}, s.config.arcDelayMsec, State6)
-	s.stateMachine.AddState(State5, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
-	s.stateMachine.AddState(State6, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
+	if err := s.stateMachine.LoadConfiguration("state_machine.yml"); err != nil {
+		s.log.Errorf("Failed to load state machine configuration: %v", err)
+	}
 
-	s.stateMachine.Start(sm.StateInit)
+	//
+	//
+	//
+	//s.stateMachine.AddState(sm.StateInit, sm.StateList{ResourceTypeProtect: StateAlarmReceived})
+	//s.stateMachine.AddStateWithTimeout(StateAlarmReceived,
+	//	sm.StateList{
+	//		ResourceTypeProtect: StateAlarmReceived,
+	//		ResourceTypeState:   State3,
+	//	}, s.config.arcDelayMsec, State2)
+	//
+	//s.stateMachine.AddState(State2, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
+	//s.stateMachine.AddStateWithTimeout(State3, sm.StateList{ResourceTypeReclosing: State5}, s.config.arcDelayMsec, State6)
+	//s.stateMachine.AddState(State5, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
+	//s.stateMachine.AddState(State6, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
+	//
+	//s.stateMachine.Start(sm.StateInit)
 }
 
 func main() {

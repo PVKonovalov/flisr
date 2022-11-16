@@ -1,0 +1,41 @@
+- state: 0
+  nextState:
+    ResourceTypeProtect: 1
+- state: 1
+  nextState:
+    ResourceTypeState: 2
+    ResourceTypeReclosing: 3
+  conditionTimeoutMs: 5000
+  nextStateByTimeout: 0
+- state: 2
+  nextState:
+    ResourceTypeReclosing: 4
+  conditionTimeoutMs: 5000
+  nextStateByTimeout: 7
+- state: 3
+  nextState:
+    ResourceTypeState: 4
+- state: 4
+  nextState:
+    ResourceTypeIsNotDefine: 5
+- state: 5
+  nextState:
+    ResourceTypeProtect: 8
+  conditionTimeoutMs: 500
+  nextStateByTimeout: 6
+- state: 6
+  nextState:
+    ResourceTypeIsNotDefine: 0
+  out: ReclosingOk
+- state: 7
+  nextState:
+    ResourceTypeIsNotDefine: 0
+- state: 8
+  nextState:
+    ResourceTypeState: 9
+- state: 9
+  nextState:
+    ResourceTypeIsNotDefine: 0
+  out: ReclosingFail
+
+

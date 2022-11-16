@@ -1,7 +1,5 @@
 github.com/PVKonovalov/localcache v0.0.0-20220829074116-8ab0d347d423 h1:BPNMYVZkcOpf43g+8lzjQcZ6fs/RpEf0Tg8c9Ae5XzI=
 github.com/PVKonovalov/localcache v0.0.0-20220829074116-8ab0d347d423/go.mod h1:dUt2Ot82+zolQBA/xr5RBw9cRPV+/CMzuR9xkszAXgU=
-github.com/PVKonovalov/topogrid v0.0.0-20221101095728-6d602b54c983 h1:jNhRSR1OQTTbYKAmHOMbt64iNuAZvXCMe+btseBiWj8=
-github.com/PVKonovalov/topogrid v0.0.0-20221101095728-6d602b54c983/go.mod h1:djGwjeXyUitPjUbcr7oNbRvnocT5Evmt16vrjin5uDQ=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -20,6 +18,7 @@ github.com/yourbasic/graph v0.0.0-20210606180040-8ecfec1c2869 h1:7v7L5lsfw4w8iqB
 github.com/yourbasic/graph v0.0.0-20210606180040-8ecfec1c2869/go.mod h1:Rfzr+sqaDreiCaoQbFCu3sTXxeFq/9kXRuyOoSlGQHE=
 golang.org/x/sync v0.1.0 h1:wsuoTGHzEhffawBOhz5CYhcrV4IdKZbEyZjBMuTp12o=
 golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/ini.v1 v1.67.0 h1:Dgnx+6+nfE+IfzjUEISNeydPJh9AXNNsWbGP9KzCsOA=
 gopkg.in/ini.v1 v1.67.0/go.mod h1:pNLf8WUiyNEtQjuu5G5vTm06TEv9tsIgeAvK8hOrP4k=
