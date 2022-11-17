@@ -41,7 +41,7 @@ type RtdbMessage struct {
 }
 
 func (c RtdbMessage) String() string {
-	return fmt.Sprintf("I: %d V: %f T: %s Q: %d S: %d", c.Id, c.Value, c.Timestamp, c.Quality, c.Source)
+	return fmt.Sprintf("[%d V: %.4f T: %s Q: %d S: %d]", c.Id, c.Value, c.Timestamp, c.Quality, c.Source)
 }
 
 // ParseScadaRtdbData Parse data from Scada RTDB to Go internal types

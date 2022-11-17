@@ -39,6 +39,19 @@ const (
 	State10            sm.State = 10
 )
 
+// Resource Types
+const (
+	ResourceTypeIsNotDefine      int = 0
+	ResourceTypeMeasure          int = 1
+	ResourceTypeState            int = 2
+	ResourceTypeControl          int = 3
+	ResourceTypeProtect          int = 4
+	ResourceTypeLink             int = 5
+	ResourceTypeChangeSetGroup   int = 6
+	ResourceTypeReclosing        int = 7
+	ResourceTypeStateLineSegment int = 8
+)
+
 const OutTagReclosingOk = 1
 const OutTagReclosingFailed = 2
 
@@ -117,6 +130,7 @@ type ThisService struct {
 	pointFromEquipmentIdAndResourceTypeId map[int]map[int]uint64
 	resourceStructFromPointId             map[uint64]ResourceStruct
 	equipmentIdArrayFromResourceTypeId    map[int][]int
+	pointNameFromPointId                  map[uint64]string
 	zmq                                   *zmq_bus.ZmqBus
 	outputEventQueue                      chan types.RtdbMessage
 	inputDataQueue                        chan types.RtdbMessage
@@ -140,6 +154,7 @@ func New() *ThisService {
 		pointFromEquipmentIdAndResourceTypeId: make(map[int]map[int]uint64),
 		equipmentIdArrayFromResourceTypeId:    make(map[int][]int),
 		stateSwitchBuffer:                     make([]types.RtdbMessage, 0),
+		pointNameFromPointId:                  make(map[uint64]string),
 	}
 }
 
@@ -377,10 +392,13 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 func (s *ThisService) CreateInternalParametersFromProfiles() {
 	for _, equipment := range s.equipmentFromEquipmentId {
 		for _, resource := range equipment.Resource {
-			if resource.TypeId == types.ResourceTypeProtect ||
-				resource.TypeId == types.ResourceTypeReclosing ||
-				resource.TypeId == types.ResourceTypeState ||
-				resource.TypeId == types.ResourceTypeStateLineSegment {
+			if resource.TypeId == ResourceTypeProtect ||
+				resource.TypeId == ResourceTypeReclosing ||
+				resource.TypeId == ResourceTypeState ||
+				resource.TypeId == ResourceTypeStateLineSegment {
+
+				s.pointNameFromPointId[resource.PointId] = resource.Point
+
 				s.resourceStructFromPointId[resource.PointId] = ResourceStruct{
 					equipmentId:    equipment.Id,
 					resourceTypeId: resource.TypeId,
@@ -454,9 +472,9 @@ func (s *ThisService) CurrentStateWorker() {
 
 			s.topologyGrid.SetEquipmentElectricalState()
 
-			for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[types.ResourceTypeStateLineSegment] {
+			for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
 				if newElectricalState, exists := s.topologyGrid.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
-					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][types.ResourceTypeStateLineSegment]; exists {
+					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeStateLineSegment]; exists {
 						//s.log.Debugf("%d:%d->%d", equipmentId, newElectricalState, pointId)
 
 						var electricalState float32 = ResourceStateIsolated
@@ -479,40 +497,40 @@ func (s *ThisService) CurrentStateWorker() {
 
 func (s *ThisService) ReceiveDataWorker() {
 	//var err error
+	var condition sm.Condition
 	for point := range s.inputDataQueue {
 		resource := s.resourceStructFromPointId[point.Id]
 
-		//if equipment, exists := s.equipmentFromEquipmentId[resource.equipmentId]; !exists {
-		//	continue
-		//} else {
-		//	if equipment.TypeId != topogrid.TypeCircuitBreaker &&
-		//		equipment.TypeId != topogrid.TypeDisconnectSwitch {
-		//		continue
-		//	}
-		//}
-
 		switch resource.resourceTypeId {
-		case types.ResourceTypeState:
-			s.log.Debugf("State: %s", point)
-			// For current state calculating
+		case ResourceTypeState:
 			s.switchDataQueue <- point
+
+			if point.Value == 1 {
+				condition = sm.ConditionSwitchOn
+			} else {
+				condition = sm.ConditionSwitchOff
+			}
+
+			s.log.Debugf("%3s: %s %s", condition.Name(), s.pointNameFromPointId[point.Id], point)
 
 			s.stateSwitchBuffer = append(s.stateSwitchBuffer, point)
 
-			_ = s.stateMachine.NextState(resource.resourceTypeId)
-		case types.ResourceTypeProtect:
+			_ = s.stateMachine.NextState(condition)
+		case ResourceTypeProtect:
+			condition = sm.ConditionProtect
+
 			if point.Value == 1 {
-				s.log.Debugf("Protect: %s", point)
+				s.log.Debugf("%3s: %s %s", condition.Name(), s.pointNameFromPointId[point.Id], point)
 				s.alarmProtectBuffer = append(s.alarmProtectBuffer, point)
-				_ = s.stateMachine.NextState(resource.resourceTypeId)
+				_ = s.stateMachine.NextState(condition)
 			}
-		case types.ResourceTypeReclosing:
+		case ResourceTypeReclosing:
+			condition = sm.ConditionReclosing
+
 			if point.Value == 1 {
-				s.log.Debugf("Reclosing: %s", point)
-				_ = s.stateMachine.NextState(resource.resourceTypeId)
+				s.log.Debugf("%3s: %s %s", condition.Name(), s.pointNameFromPointId[point.Id], point)
+				_ = s.stateMachine.NextState(condition)
 			}
-			//default:
-			//	s.log.Errorf("Unknown resource type: %s", point)
 		}
 
 		//if err != nil {
@@ -592,7 +610,7 @@ func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupply
 		return err
 	}
 
-	s.SendFlisrAlarmForEquipments(faultyEquipments, types.ResourceTypeStateLineSegment, 2)
+	s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
 	s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", "Авария")
 
 	for _, cbId := range cbList {
@@ -637,7 +655,7 @@ func (s *ThisService) SendFlisrMessageForEquipments(equipments map[int]bool, cla
 
 func (s *ThisService) SendFlisrAlarmForEquipment(equipmentId int, value int) {
 
-	if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][types.ResourceTypeState]; exists {
+	if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeState]; exists {
 		s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
 	}
 }

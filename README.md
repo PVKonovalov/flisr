@@ -11,15 +11,26 @@ All FLISR configuration is stored in .ini file.
 ; Logging level: ERROR, WARN, INFO, DEBUG
 LOG = DEBUG
 
-; Automatic circuit recloser delay
-ARC_DELAY_SEC = 6
+; Path to state machine configuration
+STATE_MACHINE_CONFIG = state_machine.yml
 
-; Length of internal communication queue
+; Length of internal queue
 QUEUE = 100
 
-; FLISR state SCADA tag identifier
+; FLISR state RTDB point identifier from POINT table
 RTDB_POINT_FLISR_STATE = 2887
 
-; FLISR tag source identifier
+; FLISR point source from POINT_SOURCE table
 POINT_SOURCE = 15
+```
+## State machine diagram
+The diagram describes how the result of the auto-reclosing process is determined.
+![State machine diagram](assets/StateMachineDiagram.png)
+
+```
+On  - The switch turns on
+Off - The switch turns off
+PR  - Overcurrent protection alarm
+RC  - Automatic reclosing in progress
+T   - Go to next state by timeout
 ```

@@ -1,7 +1,6 @@
 package state_machine
 
 import (
-	"flisr/types"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -21,7 +20,7 @@ type NextStateMap struct {
 type Configuration struct {
 	State              State        `yaml:"state"`
 	NextState          NextStateMap `yaml:"nextState,omitempty"`
-	ConditionTimeoutMs int          `yaml:"conditionTimeoutMs,omitempty"`
+	ConditionTimeoutMs Condition    `yaml:"conditionTimeoutMs,omitempty"`
 	NextStateByTimeout State        `yaml:"nextStateByTimeout,omitempty"`
 	OutMessage         string       `yaml:"outMessage,omitempty"`
 	OutTag             int          `yaml:"outTag,omitempty"`
@@ -33,7 +32,7 @@ func (b *NextStateMap) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 // StateList [condition] -> state
-type StateList map[int]State
+type StateList map[Condition]State
 type StateMatrix map[State]StateStruct
 
 const StateNil State = -1
@@ -84,8 +83,8 @@ func (s *StateMachine) LoadConfiguration(configurationFile string) error {
 	for _, state := range config {
 		nextStateList := make(StateList)
 		for resource, nextState := range state.NextState.States {
-			resourceTypeId := types.ResourceTypeFromString(resource)
-			nextStateList[resourceTypeId] = nextState
+			condition := ConditionFromName(resource)
+			nextStateList[condition] = nextState
 		}
 
 		if state.ConditionTimeoutMs == 0 {
@@ -116,9 +115,9 @@ func (s *StateMachine) AddOut(state State, outMessage string, outTag int) {
 	s.stateMatrix[state] = _state
 }
 
-func (s *StateMachine) moveToState(newState State) error {
+func (s *StateMachine) moveToState(newState State, condition Condition) error {
 
-	s.log.Debugf("%d->%d", s.curState, newState)
+	s.log.Debugf("%d-%s->%d", s.curState, condition.Name(), newState)
 
 	if state, exists := s.stateMatrix[newState]; exists {
 		s.curState = newState
@@ -129,7 +128,7 @@ func (s *StateMachine) moveToState(newState State) error {
 		s.stateHandler(state)
 
 		if nextState := s.getUnconditionalNextState(); nextState != StateNil {
-			return s.moveToState(nextState)
+			return s.moveToState(nextState, ConditionIsNotDefine)
 		}
 	} else {
 		return fmt.Errorf("next state %d was not found for state ", newState)
@@ -146,14 +145,14 @@ func (s *StateMachine) getUnconditionalNextState() State {
 	return StateNil
 }
 
-func (s *StateMachine) NextState(condition int) error {
+func (s *StateMachine) NextState(condition Condition) error {
 	state := s.stateMatrix[s.curState]
 
 	if nextState, exists := state.nextState[condition]; exists {
 		if s.timer != nil {
 			s.timer.Stop()
 		}
-		return s.moveToState(nextState)
+		return s.moveToState(nextState, condition)
 	} else {
 		return fmt.Errorf("next state was not found for state %d and condition %d", s.curState, condition)
 	}
@@ -165,7 +164,7 @@ func (s *StateMachine) Start(state State) {
 
 func (s *StateMachine) timeoutWorker() {
 	state := s.stateMatrix[s.curState]
-	_ = s.moveToState(state.nextStateByTimeout)
+	_ = s.moveToState(state.nextStateByTimeout, ConditionTimeout)
 }
 
 func (s *StateMachine) GetAsGraphMl() string {
@@ -196,7 +195,7 @@ func (s *StateMachine) GetAsGraphMl() string {
 		for condition, nextState := range state.nextState {
 			if condition != 0 {
 				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    label \"%s\"\n  ]\n",
-					curState, nextState, types.ConditionAlias(condition))
+					curState, nextState, condition.Name())
 			} else {
 				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    graphics\n    [\n      sourceArrow  \"white_circle\"\n      targetArrow  \"standard\"\n    ]\n  ]\n",
 					curState, nextState)
