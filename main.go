@@ -761,7 +761,7 @@ func main() {
 
 	s.topologyFlisr.SetEquipmentElectricalState()
 
-	fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
+	//fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
 
 	go s.CurrentStateWorker()
 

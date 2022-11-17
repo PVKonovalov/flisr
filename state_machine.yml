@@ -15,9 +15,13 @@
 - state: 3
   nextState:
     ResourceTypeState: 4
+  conditionTimeoutMs: 30000
+  nextStateByTimeout: 0
 - state: 4
   nextState:
     ResourceTypeState: 5
+  conditionTimeoutMs: 30000
+  nextStateByTimeout: 0
 - state: 5
   nextState:
     ResourceTypeProtect: 8
@@ -34,6 +38,8 @@
 - state: 8
   nextState:
     ResourceTypeState: 9
+  conditionTimeoutMs: 30000
+  nextStateByTimeout: 0
 - state: 9
   nextState:
     ResourceTypeIsNotDefine: 0
