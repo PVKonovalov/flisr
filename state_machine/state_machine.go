@@ -1,6 +1,7 @@
 package state_machine
 
 import (
+	"flisr/types"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -21,8 +22,9 @@ type Configuration struct {
 	State              State        `yaml:"state"`
 	NextState          NextStateMap `yaml:"nextState,omitempty"`
 	ConditionTimeoutMs int          `yaml:"conditionTimeoutMs,omitempty"`
-	NextStateByTimeout int          `yaml:"nextStateByTimeout,omitempty"`
-	Out                string       `yaml:"out,omitempty"`
+	NextStateByTimeout State        `yaml:"nextStateByTimeout,omitempty"`
+	OutMessage         string       `yaml:"outMessage,omitempty"`
+	OutTag             int          `yaml:"outTag,omitempty"`
 }
 
 // UnmarshalYAML is used to unmarshal into map[string]string
@@ -38,46 +40,23 @@ const StateNil State = -1
 const StateInit State = 0
 
 type StateStruct struct {
-	thisState          State
+	ThisState          State
 	nextState          StateList
 	conditionTimeoutMs time.Duration
 	nextStateByTimeout State
+	OutMessage         string
+	OutTag             int
 }
 
 type StateMachine struct {
 	curState     State
 	stateMatrix  StateMatrix
 	timer        *time.Timer
-	stateHandler func(State)
+	stateHandler func(StateStruct)
 	log          logging
 }
 
-func ResourceTypeFromString(resourceTypeName string) int {
-	switch resourceTypeName {
-	case "ResourceTypeIsNotDefine":
-		return 0
-	case "ResourceTypeMeasure":
-		return 1
-	case "ResourceTypeState":
-		return 2
-	case "ResourceTypeControl":
-		return 3
-	case "ResourceTypeProtect":
-		return 4
-	case "ResourceTypeLink":
-		return 5
-	case "ResourceTypeChangeSetGroup":
-		return 6
-	case "ResourceTypeReclosing":
-		return 7
-	case "ResourceTypeStateLineSegment":
-		return 8
-	default:
-		return 0
-	}
-}
-
-func New(logger logging, stateHandler func(state State)) *StateMachine {
+func New(logger logging, stateHandler func(state StateStruct)) *StateMachine {
 	return &StateMachine{
 		curState:     StateInit,
 		stateMatrix:  make(StateMatrix),
@@ -103,20 +82,38 @@ func (s *StateMachine) LoadConfiguration(configurationFile string) error {
 	}
 
 	for _, state := range config {
-		for _, resourse := range state.NextState.States {
-			resourceTypeId := ResourceTypeFromString()
+		nextStateList := make(StateList)
+		for resource, nextState := range state.NextState.States {
+			resourceTypeId := types.ResourceTypeFromString(resource)
+			nextStateList[resourceTypeId] = nextState
+		}
+
+		if state.ConditionTimeoutMs == 0 {
+			s.AddState(state.State, nextStateList)
+		} else {
+			s.AddStateWithTimeout(state.State, nextStateList, time.Duration(state.ConditionTimeoutMs), state.NextStateByTimeout)
+		}
+
+		if state.OutTag != 0 {
+			s.AddOut(state.State, state.OutMessage, state.OutTag)
 		}
 	}
-
 	return nil
 }
 
 func (s *StateMachine) AddState(newState State, nextState StateList) {
-	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, conditionTimeoutMs: 0, nextStateByTimeout: StateNil}
+	s.stateMatrix[newState] = StateStruct{ThisState: newState, nextState: nextState, conditionTimeoutMs: 0, nextStateByTimeout: StateNil}
 }
 
 func (s *StateMachine) AddStateWithTimeout(newState State, nextState StateList, timeoutMs time.Duration, nextStateByTimeout State) {
-	s.stateMatrix[newState] = StateStruct{thisState: newState, nextState: nextState, conditionTimeoutMs: timeoutMs, nextStateByTimeout: nextStateByTimeout}
+	s.stateMatrix[newState] = StateStruct{ThisState: newState, nextState: nextState, conditionTimeoutMs: timeoutMs, nextStateByTimeout: nextStateByTimeout}
+}
+
+func (s *StateMachine) AddOut(state State, outMessage string, outTag int) {
+	_state := s.stateMatrix[state]
+	_state.OutMessage = outMessage
+	_state.OutTag = outTag
+	s.stateMatrix[state] = _state
 }
 
 func (s *StateMachine) moveToState(newState State) error {
@@ -129,7 +126,7 @@ func (s *StateMachine) moveToState(newState State) error {
 			s.timer = time.AfterFunc(state.conditionTimeoutMs*time.Millisecond, s.timeoutWorker)
 		}
 
-		s.stateHandler(newState)
+		s.stateHandler(state)
 
 		if nextState := s.getUnconditionalNextState(); nextState != StateNil {
 			return s.moveToState(nextState)
@@ -173,13 +170,20 @@ func (s *StateMachine) timeoutWorker() {
 
 func (s *StateMachine) GetAsGraphMl() string {
 	var graphMl string
-	for curState := range s.stateMatrix {
+	for curState, state := range s.stateMatrix {
+		outline := ""
+		out := ""
+		if state.OutMessage != "" {
+			outline = "\n      outlineWidth 6\n"
+			out = ":" + state.OutMessage
+		}
+
 		if curState == s.curState {
-			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d\"\n    graphics\n      [\n      w 40.0\n      h 40.0\n      type \"ellipse\"\n      fill \"#FF0000\"\n    ]\n]\n",
-				curState, curState)
+			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d%s\"\n    graphics\n      [\n      w 40.0\n      h 40.0\n      type \"ellipse\"\n      fill \"#FF0000\"\n%s    ]\n]\n",
+				curState, curState, out, outline)
 		} else {
-			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d\"\n    graphics\n      [\n      w 30.0\n      h 30.0\n      type \"ellipse\"\n    ]\n]\n",
-				curState, curState)
+			graphMl += fmt.Sprintf("  node [\n    id %d\n    label \"%d%s\"\n    graphics\n      [\n      w 30.0\n      h 30.0\n      type \"ellipse\"\n%s    ]\n]\n",
+				curState, curState, out, outline)
 		}
 	}
 
@@ -191,8 +195,8 @@ func (s *StateMachine) GetAsGraphMl() string {
 
 		for condition, nextState := range state.nextState {
 			if condition != 0 {
-				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    label \"%d\"\n  ]\n",
-					curState, nextState, condition)
+				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    label \"%s\"\n  ]\n",
+					curState, nextState, types.ConditionAlias(condition))
 			} else {
 				graphMl += fmt.Sprintf("  edge [\n    source %d\n    target %d\n    graphics\n    [\n      sourceArrow  \"white_circle\"\n      targetArrow  \"standard\"\n    ]\n  ]\n",
 					curState, nextState)

@@ -17,7 +17,7 @@
     ResourceTypeState: 4
 - state: 4
   nextState:
-    ResourceTypeIsNotDefine: 5
+    ResourceTypeState: 5
 - state: 5
   nextState:
     ResourceTypeProtect: 8
@@ -26,7 +26,8 @@
 - state: 6
   nextState:
     ResourceTypeIsNotDefine: 0
-  out: ReclosingOk
+  outMessage: ReclosingOk
+  outTag: 1
 - state: 7
   nextState:
     ResourceTypeIsNotDefine: 0
@@ -36,6 +37,6 @@
 - state: 9
   nextState:
     ResourceTypeIsNotDefine: 0
-  out: ReclosingFail
-
+  outMessage: ReclosingFail
+  outTag: 2
 

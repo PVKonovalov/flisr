@@ -26,19 +26,6 @@ const ResourceStateGood = 0
 const ResourceStateIsolated = 1
 const ResourceStateFault = 2
 
-// Resource Types
-const (
-	ResourceTypeIsNotDefine      = 0
-	ResourceTypeMeasure          = 1
-	ResourceTypeState            = 2
-	ResourceTypeControl          = 3
-	ResourceTypeProtect          = 4
-	ResourceTypeLink             = 5
-	ResourceTypeChangeSetGroup   = 6
-	ResourceTypeReclosing        = 7
-	ResourceTypeStateLineSegment = 8
-)
-
 const (
 	StateAlarmReceived sm.State = 1
 	State2             sm.State = 2
@@ -47,7 +34,13 @@ const (
 	State5             sm.State = 5
 	State6             sm.State = 6
 	State7             sm.State = 7
+	State8             sm.State = 8
+	State9             sm.State = 9
+	State10            sm.State = 10
 )
+
+const OutTagReclosingOk = 1
+const OutTagReclosingFailed = 2
 
 // ConfigStruct from FLISR configuration file
 type ConfigStruct struct {
@@ -61,9 +54,9 @@ type ConfigStruct struct {
 	zmqRtdbInput             string
 	zmqAlarmMessage          string
 	jobQueueLength           int
-	arcDelayMsec             time.Duration
 	rtdbPointFlisrState      uint64
 	pointSource              uint32
+	stateMachineConfig       string
 }
 
 type EdgeStruct struct {
@@ -175,11 +168,7 @@ func (s *ThisService) ReadConfig(configFile string) error {
 		s.config.jobQueueLength = 100
 	}
 
-	var delay int
-	s.config.arcDelayMsec = 5000
-	if delay, err = cfg.Section("FLISR").Key("ARC_DELAY_MSEC").Int(); err == nil {
-		s.config.arcDelayMsec = time.Duration(delay)
-	}
+	s.config.stateMachineConfig = cfg.Section("FLISR").Key("STATE_MACHINE_CONFIG").String()
 
 	var pointSource uint64
 	s.config.pointSource = 0
@@ -388,10 +377,10 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 func (s *ThisService) CreateInternalParametersFromProfiles() {
 	for _, equipment := range s.equipmentFromEquipmentId {
 		for _, resource := range equipment.Resource {
-			if resource.TypeId == ResourceTypeProtect ||
-				resource.TypeId == ResourceTypeReclosing ||
-				resource.TypeId == ResourceTypeState ||
-				resource.TypeId == ResourceTypeStateLineSegment {
+			if resource.TypeId == types.ResourceTypeProtect ||
+				resource.TypeId == types.ResourceTypeReclosing ||
+				resource.TypeId == types.ResourceTypeState ||
+				resource.TypeId == types.ResourceTypeStateLineSegment {
 				s.resourceStructFromPointId[resource.PointId] = ResourceStruct{
 					equipmentId:    equipment.Id,
 					resourceTypeId: resource.TypeId,
@@ -465,10 +454,10 @@ func (s *ThisService) CurrentStateWorker() {
 
 			s.topologyGrid.SetEquipmentElectricalState()
 
-			for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
+			for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[types.ResourceTypeStateLineSegment] {
 				if newElectricalState, exists := s.topologyGrid.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
-					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeStateLineSegment]; exists {
-						s.log.Debugf("%d:%d->%d", equipmentId, newElectricalState, pointId)
+					if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][types.ResourceTypeStateLineSegment]; exists {
+						//s.log.Debugf("%d:%d->%d", equipmentId, newElectricalState, pointId)
 
 						var electricalState float32 = ResourceStateIsolated
 
@@ -489,7 +478,7 @@ func (s *ThisService) CurrentStateWorker() {
 }
 
 func (s *ThisService) ReceiveDataWorker() {
-	var err error
+	//var err error
 	for point := range s.inputDataQueue {
 		resource := s.resourceStructFromPointId[point.Id]
 
@@ -503,32 +492,32 @@ func (s *ThisService) ReceiveDataWorker() {
 		//}
 
 		switch resource.resourceTypeId {
-		case ResourceTypeState:
+		case types.ResourceTypeState:
 			s.log.Debugf("State: %s", point)
 			// For current state calculating
 			s.switchDataQueue <- point
 
 			s.stateSwitchBuffer = append(s.stateSwitchBuffer, point)
 
-			err = s.stateMachine.NextState(resource.resourceTypeId)
-		case ResourceTypeProtect:
+			_ = s.stateMachine.NextState(resource.resourceTypeId)
+		case types.ResourceTypeProtect:
 			if point.Value == 1 {
 				s.log.Debugf("Protect: %s", point)
 				s.alarmProtectBuffer = append(s.alarmProtectBuffer, point)
-				err = s.stateMachine.NextState(resource.resourceTypeId)
+				_ = s.stateMachine.NextState(resource.resourceTypeId)
 			}
-		case ResourceTypeReclosing:
+		case types.ResourceTypeReclosing:
 			if point.Value == 1 {
 				s.log.Debugf("Reclosing: %s", point)
-				err = s.stateMachine.NextState(resource.resourceTypeId)
+				_ = s.stateMachine.NextState(resource.resourceTypeId)
 			}
 			//default:
 			//	s.log.Errorf("Unknown resource type: %s", point)
 		}
 
-		if err != nil {
-			s.log.Debugf("P:%d: %v", point.Id, err)
-		}
+		//if err != nil {
+		//	s.log.Debugf("P:%d: %v", point.Id, err)
+		//}
 	}
 }
 
@@ -540,7 +529,7 @@ func (s *ThisService) OutputEventWorker() {
 		event.Quality = 0
 		event.Source = s.config.pointSource
 
-		s.log.Debugf("O: %+v", event)
+		// s.log.Debugf("O: %+v", event)
 
 		data, err := json.Marshal([]types.RtdbMessage{event})
 		if err != nil {
@@ -603,7 +592,7 @@ func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupply
 		return err
 	}
 
-	s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
+	s.SendFlisrAlarmForEquipments(faultyEquipments, types.ResourceTypeStateLineSegment, 2)
 	s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", "Авария")
 
 	for _, cbId := range cbList {
@@ -648,7 +637,7 @@ func (s *ThisService) SendFlisrMessageForEquipments(equipments map[int]bool, cla
 
 func (s *ThisService) SendFlisrAlarmForEquipment(equipmentId int, value int) {
 
-	if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][ResourceTypeState]; exists {
+	if pointId, exists := s.pointFromEquipmentIdAndResourceTypeId[equipmentId][types.ResourceTypeState]; exists {
 		s.outputEventQueue <- types.RtdbMessage{Id: pointId, Value: float32(value)}
 	}
 }
@@ -661,18 +650,22 @@ func (s *ThisService) SendFlisrAlarmForEquipments(equipments map[int]bool, resou
 	}
 }
 
-func (s *ThisService) StateHandler(state sm.State) {
-	switch state {
-	case sm.StateInit:
+func (s *ThisService) StateHandler(state sm.StateStruct) {
+
+	if state.OutMessage != "" {
+		s.log.Debugf("%d->%s", state.ThisState, state.OutMessage)
+	}
+
+	if state.ThisState == sm.StateInit {
 		s.alarmProtectBuffer = s.alarmProtectBuffer[:0]
 		s.stateSwitchBuffer = s.stateSwitchBuffer[:0]
+	}
 
-	case State2:
-		s.log.Debugf("!!")
-	case State5:
-		s.log.Debugf("Reclosing OK: %+v", s.alarmProtectBuffer)
-	case State6:
-		s.log.Debugf("Reclosing failed: %+v", s.alarmProtectBuffer)
+	switch state.OutTag {
+	case OutTagReclosingOk:
+		s.log.Debugf("%d->%s: %+v", state.ThisState, state.OutMessage, s.alarmProtectBuffer)
+	case OutTagReclosingFailed:
+		s.log.Debugf("%d->%s: %+v", state.ThisState, state.OutMessage, s.alarmProtectBuffer)
 
 		faultyCBEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
 
@@ -685,30 +678,11 @@ func (s *ThisService) StateHandler(state sm.State) {
 			s.log.Errorf("Failed to find faulty equipment")
 		}
 	}
+
 }
 
-func (s *ThisService) InitStateMachine() {
-
-	if err := s.stateMachine.LoadConfiguration("state_machine.yml"); err != nil {
-		s.log.Errorf("Failed to load state machine configuration: %v", err)
-	}
-
-	//
-	//
-	//
-	//s.stateMachine.AddState(sm.StateInit, sm.StateList{ResourceTypeProtect: StateAlarmReceived})
-	//s.stateMachine.AddStateWithTimeout(StateAlarmReceived,
-	//	sm.StateList{
-	//		ResourceTypeProtect: StateAlarmReceived,
-	//		ResourceTypeState:   State3,
-	//	}, s.config.arcDelayMsec, State2)
-	//
-	//s.stateMachine.AddState(State2, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
-	//s.stateMachine.AddStateWithTimeout(State3, sm.StateList{ResourceTypeReclosing: State5}, s.config.arcDelayMsec, State6)
-	//s.stateMachine.AddState(State5, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
-	//s.stateMachine.AddState(State6, sm.StateList{ResourceTypeIsNotDefine: sm.StateInit})
-	//
-	//s.stateMachine.Start(sm.StateInit)
+func (s *ThisService) InitStateMachine() error {
+	return s.stateMachine.LoadConfiguration(s.config.stateMachineConfig)
 }
 
 func main() {
@@ -756,7 +730,9 @@ func main() {
 		s.log.Fatalf("Failed to load topology: %v", err)
 	}
 
-	s.InitStateMachine()
+	if err = s.InitStateMachine(); err != nil {
+		s.log.Fatalf("Failed to load state machine configuration: %v", err)
+	}
 
 	if s.zmq, err = zmq_bus.New(1, 2); err != nil {
 		s.log.Fatalf("Failed to create zmq context: %v", err)
@@ -785,7 +761,7 @@ func main() {
 
 	s.topologyFlisr.SetEquipmentElectricalState()
 
-	// fmt.Printf("%s\n", s.topologyFlisr.GetAsGraphMl())
+	fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
 
 	go s.CurrentStateWorker()
 
