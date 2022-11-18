@@ -88,6 +88,18 @@ func (t *TopologyGridStruct) EquipmentNameByEquipmentId(equipmentId int) string 
 	return t.equipment[equipmentId].name
 }
 
+// EquipmentNameByEquipmentIdArray returns a string with node name from the equipment id
+func (t *TopologyGridStruct) EquipmentNameByEquipmentIdArray(equipmentIdArray []int) string {
+	var name string
+	for i, equipmentId := range equipmentIdArray {
+		if i != 0 {
+			name += ","
+		}
+		name += t.equipment[equipmentId].name
+	}
+	return name
+}
+
 // EquipmentNameByNodeIdx returns a string with node name from the node index
 func (t *TopologyGridStruct) EquipmentNameByNodeIdx(idx int) string {
 	return t.equipment[t.nodes[idx].equipmentId].name
@@ -123,6 +135,11 @@ func (t *TopologyGridStruct) EquipmentNameByEdgeIdx(idx int) string {
 func (t *TopologyGridStruct) EquipmentElectricalStateByEquipmentId(id int) (uint8, bool) {
 	equipment, exists := t.equipment[id]
 	return equipment.electricalState, exists
+}
+
+func (t *TopologyGridStruct) EquipmentSwitchStateByEquipmentId(id int) (int, bool) {
+	equipment, exists := t.equipment[id]
+	return equipment.switchState, exists
 }
 
 // EquipmentNameByEdgeId returns a string with node name from the node id
@@ -597,8 +614,8 @@ func (t *TopologyGridStruct) GetFurthestEquipmentFromPower(equipmentIds []int) (
 	return furthestEquipmentId, poweredByNodeId, poweredBy[poweredByNodeId]
 }
 
-// GetFurthestEquipmentNodeIdFromPower returns the farthest (from two) equipment node id (terminal) from the power source
-func (t *TopologyGridStruct) GetFurthestEquipmentNodeIdFromPower(poweredByNodeId int, equipmentId int) int {
+// GetFurthestEquipmentTerminalIdFromPower returns the farthest (from two) equipment node id (terminal) from the power source
+func (t *TopologyGridStruct) GetFurthestEquipmentTerminalIdFromPower(poweredByNodeId int, equipmentId int) int {
 	var furthestNodeId = 0
 	var maxNumberOfSwitches int64 = 0
 
@@ -611,4 +628,67 @@ func (t *TopologyGridStruct) GetFurthestEquipmentNodeIdFromPower(poweredByNodeId
 	}
 
 	return furthestNodeId
+}
+
+func (t *TopologyGridStruct) GetCbListToEnergizeEquipment(equipmentId int) map[int][]int {
+
+	cbListToEnergizeEquipment := make(map[int][]int)
+
+	for _, nodeId := range t.nodeIdArrayFromEquipmentId[equipmentId] {
+		if powerNodeIdArray, err := t.NodeCanBePoweredBy(nodeId); err == nil {
+			for _, poweredByNodeId := range powerNodeIdArray {
+
+				pathCb := make(map[int]bool)
+
+				path, numberOfSwitches := graph.ShortestPath(t.fullGraph, t.nodeIdxFromNodeId[nodeId], t.nodeIdxFromNodeId[poweredByNodeId])
+				if numberOfSwitches != 0 {
+					if len(path) > 1 {
+						for i := 0; i < len(path)-1; i++ {
+							terminal := TerminalStruct{
+								node1Id: t.nodes[path[i]].id,
+								node2Id: t.nodes[path[i+1]].id,
+							}
+
+							if edgeIdArray, exists := t.edgeIdArrayFromTerminalStruct[terminal]; exists {
+								for _, edgeId := range edgeIdArray {
+									if equipmentInPathId, err := t.EquipmentIdByEdgeId(edgeId); err == nil {
+										if t.equipment[equipmentInPathId].typeId == TypeCircuitBreaker {
+											pathCb[equipmentInPathId] = true
+										}
+									}
+								}
+							}
+
+							terminal.node1Id, terminal.node2Id = terminal.node2Id, terminal.node1Id
+
+							if edgeIdArray, exists := t.edgeIdArrayFromTerminalStruct[terminal]; exists {
+								for _, edgeId := range edgeIdArray {
+									if equipmentInPathId, err := t.EquipmentIdByEdgeId(edgeId); err == nil {
+										if t.equipment[equipmentInPathId].typeId == TypeCircuitBreaker {
+											pathCb[equipmentInPathId] = true
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				if len(pathCb) != 0 {
+					powerNodeEquipmentId := t.nodes[t.nodeIdxFromNodeId[poweredByNodeId]].equipmentId
+					cbListToEnergizeEquipment[powerNodeEquipmentId] = make([]int, len(pathCb))
+					i := 0
+					for equipmentCbId, _ := range pathCb {
+						cbListToEnergizeEquipment[powerNodeEquipmentId][i] = equipmentCbId
+						i += 1
+					}
+				}
+			}
+		}
+	}
+
+	if len(cbListToEnergizeEquipment) == 0 {
+		return nil
+	}
+
+	return cbListToEnergizeEquipment
 }

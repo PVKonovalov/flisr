@@ -143,6 +143,7 @@ type ThisService struct {
 	rtdbPublisherIdx                      int
 	messagePublisherIdx                   int
 	numberOfCBCheckingLink                int
+	enableAutoMode                        bool
 }
 
 // New FLISR service
@@ -157,6 +158,7 @@ func New() *ThisService {
 		equipmentIdArrayFromResourceTypeId:    make(map[int][]int),
 		stateSwitchBuffer:                     make([]types.RtdbMessage, 0),
 		pointNameFromPointId:                  make(map[uint64]string),
+		enableAutoMode:                        false,
 	}
 }
 
@@ -604,10 +606,12 @@ func (s *ThisService) FlisrGetFaultyEquipment() (int, int, int64) {
 	return faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches
 }
 
-func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupplyNodeId int) error {
-	furthestTerminalNodeId := s.topologyFlisr.GetFurthestEquipmentNodeIdFromPower(powerSupplyNodeId, faultyCBEquipmentId)
+func (s *ThisService) GetListCBToIsolateSegmentAndFaultyEquipment(faultyCBEquipmentId int, powerSupplyNodeId int) ([]int, map[int]bool, error) {
+
+	furthestTerminalNodeId := s.topologyFlisr.GetFurthestEquipmentTerminalIdFromPower(powerSupplyNodeId, faultyCBEquipmentId)
+
 	if furthestTerminalNodeId == 0 {
-		return fmt.Errorf("furthest terminal node was not found for equipment id: %d", faultyCBEquipmentId)
+		return nil, nil, fmt.Errorf("furthest terminal node was not found for equipment id: %d", faultyCBEquipmentId)
 	}
 
 	s.log.Debugf("Energized by node:%d Equipment:%d:'%s'->Node:%d", powerSupplyNodeId, faultyCBEquipmentId, s.topologyFlisr.EquipmentNameByEquipmentId(faultyCBEquipmentId), furthestTerminalNodeId)
@@ -615,32 +619,87 @@ func (s *ThisService) FlisrIsolateEquipment(faultyCBEquipmentId int, powerSupply
 	cbList, faultyEquipments, err := s.topologyFlisr.GetCircuitBreakersEdgeIdsNextToNode(furthestTerminalNodeId)
 
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
-	s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", "Авария")
+	return cbList, faultyEquipments, nil
+}
 
-	for _, cbId := range cbList {
-		if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
-			s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Отключить")
+func (s *ThisService) GetListCBToRestoreService(listCbToTurnOff []int, faultyEquipments map[int]bool) (map[int][]int, error) {
+	var err error
+
+	mapCbToTurnOn := make(map[int][]int)
+	mapCbToTurnOff := make(map[int]bool)
+
+	for _, edgeId := range listCbToTurnOff {
+		if equipmentCbId, err1 := s.topologyFlisr.EquipmentIdByEdgeId(edgeId); err1 == nil {
+			mapCbToTurnOff[equipmentCbId] = true
 		}
 	}
 
-	// List of CBs to switch to OFF state
-	s.log.Debugf("Need to OFF %+v:[%s]", cbList, s.topologyFlisr.EquipmentNameByEdgeIdArray(cbList))
+	if err = s.UpdateTopologyByListCb(listCbToTurnOff, 0); err != nil {
+		s.log.Errorf("Failed to update topology: %v", err)
+	}
 
-	//for _, cbId := range cbList {
-	//	equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	err = s.topologyFlisr.SetSwitchStateByEquipmentId(equipmentId, 0)
-	//	if err != nil {
-	//		return err
-	//	}
-	//}
+	s.topologyFlisr.SetEquipmentElectricalState()
+
+	for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
+		if newElectricalState, exists := s.topologyGrid.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
+			if _, exists = faultyEquipments[equipmentId]; !exists {
+				if newElectricalState == topogrid.StateIsolated {
+					equipment := s.equipmentFromEquipmentId[equipmentId]
+					s.log.Debugf("Restore: %s", equipment.Name)
+
+					cbListToEnergizeEquipment := s.topologyFlisr.GetCbListToEnergizeEquipment(equipmentId)
+
+					for powerEquipmentId, cbList := range cbListToEnergizeEquipment {
+						cbListOn := make([]int, 0)
+
+						for _, cbId := range cbList {
+							if _, exists1 := mapCbToTurnOff[cbId]; exists1 {
+								cbListOn = cbListOn[:0]
+								break
+							}
+
+							if cbSwitchState, exists1 := s.topologyFlisr.EquipmentSwitchStateByEquipmentId(cbId); exists1 && cbSwitchState == 0 {
+								cbListOn = append(cbListOn, cbId)
+							}
+						}
+
+						if len(cbListOn) != 0 {
+							mapCbToTurnOn[powerEquipmentId] = cbListOn
+							s.log.Debugf("%s:[%s]", s.topologyFlisr.EquipmentNameByEquipmentId(powerEquipmentId), s.topologyFlisr.EquipmentNameByEquipmentIdArray(cbListOn))
+						}
+					}
+					// s.log.Debugf("+ %+v", mapCbToTurnOn)
+				}
+			}
+		}
+	}
+
+	return mapCbToTurnOn, nil
+}
+
+func (s *ThisService) FlisrIsolate(listCbToTurnOff []int) {
+	s.log.Debugf("Auto isolate")
+}
+
+func (s *ThisService) FlisrRestoreService(listCbToTurnOn []int) {
+	s.log.Debugf("Auto restore service")
+}
+
+func (s *ThisService) UpdateTopologyByListCb(listCb []int, switchState int) error {
+
+	var err error
+	var equipmentId int
+
+	for _, edgeId := range listCb {
+		if equipmentId, err = s.topologyFlisr.EquipmentIdByEdgeId(edgeId); err == nil {
+			if err = s.topologyFlisr.SetSwitchStateByEquipmentId(equipmentId, switchState); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -696,15 +755,42 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 		faultyCBEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
 
 		if faultyCBEquipmentId != 0 {
-			err := s.FlisrIsolateEquipment(faultyCBEquipmentId, powerSupplyNodeId)
-			if err != nil {
+			if listCbToTurnOff, faultyEquipments, err := s.GetListCBToIsolateSegmentAndFaultyEquipment(faultyCBEquipmentId, powerSupplyNodeId); err == nil {
+				s.log.Debugf("Turn off CB: [%s]", s.topologyFlisr.EquipmentNameByEdgeIdArray(listCbToTurnOff))
+
+				s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
+				s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", "Авария")
+
+				for _, cbId := range listCbToTurnOff {
+					if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
+						s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Отключить")
+					}
+				}
+
+				if s.enableAutoMode {
+					s.FlisrIsolate(listCbToTurnOff)
+				}
+
+				if mapCbToTurnOn, err := s.GetListCBToRestoreService(listCbToTurnOff, faultyEquipments); err == nil {
+					for _, listCbToTurnOn := range mapCbToTurnOn {
+						for _, cbId := range listCbToTurnOn {
+							if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
+								s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Включить")
+							}
+						}
+
+						if s.enableAutoMode {
+							s.FlisrRestoreService(listCbToTurnOn)
+						}
+					}
+				}
+			} else {
 				s.log.Errorf("Failed to isolate equipment id %d: %v", faultyCBEquipmentId, err)
 			}
 		} else {
 			s.log.Errorf("Failed to find faulty equipment")
 		}
 	}
-
 }
 
 func (s *ThisService) InitStateMachine() error {
@@ -713,6 +799,8 @@ func (s *ThisService) InitStateMachine() error {
 
 func (s *ThisService) CBLinkCheckWorker() {
 	linkStateCB := make(map[int]bool)
+	rtdbMessage := types.RtdbMessage{Id: s.config.flisrStateRtdbPoint}
+	currentValue := float32(-1)
 
 	for linkSate := range s.linkStateDataQueue {
 		if resource, exists := s.resourceStructFromPointId[linkSate.Id]; exists {
@@ -722,9 +810,14 @@ func (s *ThisService) CBLinkCheckWorker() {
 				delete(linkStateCB, resource.equipmentId)
 			}
 			if len(linkStateCB) == s.numberOfCBCheckingLink {
-				s.outputEventQueue <- types.RtdbMessage{Id: s.config.flisrStateRtdbPoint, Value: 1}
+				rtdbMessage.Value = 1
 			} else {
-				s.outputEventQueue <- types.RtdbMessage{Id: s.config.flisrStateRtdbPoint, Value: 0}
+				rtdbMessage.Value = 0
+			}
+
+			if rtdbMessage.Value != currentValue {
+				currentValue = rtdbMessage.Value
+				s.outputEventQueue <- rtdbMessage
 			}
 		}
 	}
