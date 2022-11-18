@@ -67,7 +67,7 @@ type ConfigStruct struct {
 	zmqRtdbInput             string
 	zmqAlarmMessage          string
 	jobQueueLength           int
-	rtdbPointFlisrState      uint64
+	flisrStateRtdbPoint      uint64
 	pointSource              uint32
 	stateMachineConfig       string
 }
@@ -135,12 +135,14 @@ type ThisService struct {
 	outputEventQueue                      chan types.RtdbMessage
 	inputDataQueue                        chan types.RtdbMessage
 	switchDataQueue                       chan types.RtdbMessage
+	linkStateDataQueue                    chan types.RtdbMessage
 	outputMessageQueue                    chan message.OutputMessageStruct
 	stateMachine                          *sm.StateMachine
 	alarmProtectBuffer                    []types.RtdbMessage
 	stateSwitchBuffer                     []types.RtdbMessage
 	rtdbPublisherIdx                      int
 	messagePublisherIdx                   int
+	numberOfCBCheckingLink                int
 }
 
 // New FLISR service
@@ -191,8 +193,8 @@ func (s *ThisService) ReadConfig(configFile string) error {
 		s.config.pointSource = uint32(pointSource)
 	}
 
-	if s.config.rtdbPointFlisrState, err = cfg.Section("FLISR").Key("RTDB_POINT_FLISR_STATE").Uint64(); err != nil {
-		s.config.rtdbPointFlisrState = 0
+	if s.config.flisrStateRtdbPoint, err = cfg.Section("FLISR").Key("RTDB_POINT_FLISR_STATE").Uint64(); err != nil {
+		s.config.flisrStateRtdbPoint = 0
 	}
 
 	return nil
@@ -395,7 +397,8 @@ func (s *ThisService) CreateInternalParametersFromProfiles() {
 			if resource.TypeId == ResourceTypeProtect ||
 				resource.TypeId == ResourceTypeReclosing ||
 				resource.TypeId == ResourceTypeState ||
-				resource.TypeId == ResourceTypeStateLineSegment {
+				resource.TypeId == ResourceTypeStateLineSegment ||
+				resource.TypeId == ResourceTypeLink {
 
 				s.pointNameFromPointId[resource.PointId] = resource.Point
 
@@ -409,6 +412,9 @@ func (s *ThisService) CreateInternalParametersFromProfiles() {
 				}
 				s.pointFromEquipmentIdAndResourceTypeId[equipment.Id][resource.TypeId] = resource.PointId
 
+				if resource.TypeId == ResourceTypeLink {
+					s.numberOfCBCheckingLink += 1
+				}
 			}
 			if _, exists := s.equipmentIdArrayFromResourceTypeId[resource.TypeId]; !exists {
 				s.equipmentIdArrayFromResourceTypeId[resource.TypeId] = make([]int, 0)
@@ -531,8 +537,10 @@ func (s *ThisService) ReceiveDataWorker() {
 				s.log.Debugf("%3s: %s %s", condition.Name(), s.pointNameFromPointId[point.Id], point)
 				_ = s.stateMachine.NextState(condition)
 			}
-		}
 
+		case ResourceTypeLink:
+			s.linkStateDataQueue <- point
+		}
 		//if err != nil {
 		//	s.log.Debugf("P:%d: %v", point.Id, err)
 		//}
@@ -703,6 +711,25 @@ func (s *ThisService) InitStateMachine() error {
 	return s.stateMachine.LoadConfiguration(s.config.stateMachineConfig)
 }
 
+func (s *ThisService) CBLinkCheckWorker() {
+	linkStateCB := make(map[int]bool)
+
+	for linkSate := range s.linkStateDataQueue {
+		if resource, exists := s.resourceStructFromPointId[linkSate.Id]; exists {
+			if linkSate.Value == 1 {
+				linkStateCB[resource.equipmentId] = true
+			} else {
+				delete(linkStateCB, resource.equipmentId)
+			}
+			if len(linkStateCB) == s.numberOfCBCheckingLink {
+				s.outputEventQueue <- types.RtdbMessage{Id: s.config.flisrStateRtdbPoint, Value: 1}
+			} else {
+				s.outputEventQueue <- types.RtdbMessage{Id: s.config.flisrStateRtdbPoint, Value: 0}
+			}
+		}
+	}
+}
+
 func main() {
 	var err error
 	var configFile string
@@ -723,6 +750,7 @@ func main() {
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.switchDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.outputMessageQueue = make(chan message.OutputMessageStruct, s.config.jobQueueLength)
+	s.linkStateDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 
 	var logLevel llog.Level
 
@@ -774,6 +802,7 @@ func main() {
 	go s.ReceiveDataWorker()
 	go s.OutputMessageWorker()
 	go s.OutputEventWorker()
+	go s.CBLinkCheckWorker()
 
 	s.log.Infof("Started")
 
