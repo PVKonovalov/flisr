@@ -1,7 +1,6 @@
 # FLISR
-
 FLISR - Fault Location, Isolation, and Service Restoration service can automate power restoration in seconds,
-automatically isolating faults and restoring power to disconnected feeders.
+automatically isolating faults and restoring power to disconnected feeders. The service uses [Topogrid](https://github.com/PVKonovalov/topogrid) library.
 The FLISR operation logic is described by the following algorithm and consists of four steps:
 1. Determination of failed auto reclosing event
 2. Determination of a faulty section of the network
