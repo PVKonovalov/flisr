@@ -32,7 +32,7 @@ T   - Go to next state by timeout
 10. A new electrical state of the network sections is calculated based on the internal model
 11. A list of network sections that are isolated is formed
 12. For each of the sections of the network that are without voltage, except for the section designated as faulty, a list of switching devices is formed, located between the selected section of the network and each of the power centres
-13. Each of the generated lists of switching devices is checked, and if this list contains switching devices that were defined in paragraph 7, then this list is excluded from further consideration.
+13. Each of the generated lists of switching devices is checked, and if this list contains switching devices that were defined in step #7, then this list is excluded from further consideration.
 14. The remaining lists of switching devices for restoration of power supply are displayed for selection by the dispatcher.
 15. The new topology of the circuit is checked and a list of switching devices is formed for which it is necessary to change the number of the setting group
 
