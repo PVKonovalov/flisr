@@ -70,7 +70,6 @@ type ConfigStruct struct {
 	flisrStateRtdbPoint      uint64
 	pointSource              uint32
 	stateMachineConfig       string
-	apiPrefix                string
 }
 
 type EdgeStruct struct {
@@ -175,7 +174,10 @@ func (s *ThisService) ReadConfig(configFile string) error {
 	s.config.username = cfg.Section("CONFIGAPI").Key("USERNAME").String()
 	s.config.password = cfg.Section("CONFIGAPI").Key("PASSWORD").String()
 	s.config.configAPIHostVirtualName = cfg.Section("CONFIGAPI").Key("HOST_VIRTUAL_NAME").String()
-	s.config.configAPIHostList = strings.Split(cfg.Section("CONFIGAPI").Key("HOST").String(), ",")
+	s.config.configAPIHostList = strings.Split(cfg.Section("FLISR").Key("HOST").String(), ",")
+	if len(s.config.configAPIHostList) == 0 {
+		return fmt.Errorf("FLISR/HOST is not found")
+	}
 
 	s.config.zmqRtdb = cfg.Section("BUSES").Key("ZMQ_RTDB_OUTPUT_POINT").String()
 	s.config.zmqRtdbCommand = cfg.Section("BUSES").Key("ZMQ_RTDB_COMMAND_POINT").String()
@@ -202,8 +204,6 @@ func (s *ThisService) ReadConfig(configFile string) error {
 	if s.config.flisrStateRtdbPoint, err = cfg.Section("FLISR").Key("RTDB_POINT_FLISR_STATE").Uint64(); err != nil {
 		s.config.flisrStateRtdbPoint = 0
 	}
-
-	s.config.apiPrefix = cfg.Section("FLISR").Key("API_PREFIX").String()
 
 	return nil
 }
@@ -239,7 +239,7 @@ func (s *ThisService) LoadTopologyProfile(timeoutSec time.Duration, isLoadFromCa
 	resultErr := errors.New("unknown error. Check configuration file")
 
 	for _, urlAPIHost := range s.config.configAPIHostList {
-		urlAPIHost = strings.TrimSpace(urlAPIHost) + s.config.apiPrefix
+		urlAPIHost = strings.TrimSpace(urlAPIHost)
 		api := webapi.Connection{
 			Timeout:         timeoutSec,
 			BaseUrl:         urlAPIHost,
@@ -327,7 +327,7 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 	resultErr := errors.New("unknown error. Check configuration file")
 
 	for _, urlAPIHost := range s.config.configAPIHostList {
-		urlAPIHost = strings.TrimSpace(urlAPIHost) + s.config.apiPrefix
+		urlAPIHost = strings.TrimSpace(urlAPIHost)
 		api := webapi.Connection{
 			Timeout:         timeoutSec,
 			BaseUrl:         urlAPIHost,
