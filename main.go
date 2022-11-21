@@ -70,6 +70,7 @@ type ConfigStruct struct {
 	flisrStateRtdbPoint      uint64
 	pointSource              uint32
 	stateMachineConfig       string
+	apiPrefix                string
 }
 
 type EdgeStruct struct {
@@ -199,6 +200,8 @@ func (s *ThisService) ReadConfig(configFile string) error {
 		s.config.flisrStateRtdbPoint = 0
 	}
 
+	s.config.apiPrefix = cfg.Section("FLISR").Key("API_PREFIX").String()
+
 	return nil
 }
 
@@ -233,7 +236,7 @@ func (s *ThisService) LoadTopologyProfile(timeoutSec time.Duration, isLoadFromCa
 	resultErr := errors.New("unknown error. Check configuration file")
 
 	for _, urlAPIHost := range s.config.configAPIHostList {
-		urlAPIHost = strings.TrimSpace(urlAPIHost)
+		urlAPIHost = strings.TrimSpace(urlAPIHost) + s.config.apiPrefix
 		api := webapi.Connection{
 			Timeout:         timeoutSec,
 			BaseUrl:         urlAPIHost,
@@ -321,7 +324,7 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 	resultErr := errors.New("unknown error. Check configuration file")
 
 	for _, urlAPIHost := range s.config.configAPIHostList {
-		urlAPIHost = strings.TrimSpace(urlAPIHost)
+		urlAPIHost = strings.TrimSpace(urlAPIHost) + s.config.apiPrefix
 		api := webapi.Connection{
 			Timeout:         timeoutSec,
 			BaseUrl:         urlAPIHost,
