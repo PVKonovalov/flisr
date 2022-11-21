@@ -54,4 +54,8 @@ RTDB_POINT_FLISR_STATE = 2887
 
 ; FLISR point source from POINT_SOURCE table
 POINT_SOURCE = 15
+
+; FLISR API prefix
+API_PREFIX = /rsdu/flisr
+
 ```

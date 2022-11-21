@@ -182,6 +182,9 @@ func (s *ThisService) ReadConfig(configFile string) error {
 	s.config.zmqRtdbInput = cfg.Section("BUSES").Key("ZMQ_RTDB_INPUT_POINT").String()
 
 	s.config.zmqAlarmMessage = cfg.Section("SLD_BRIDGE").Key("ZMQ_ALARM_MESSAGE_POINT").String()
+	if s.config.zmqAlarmMessage == "" {
+		return fmt.Errorf("SLD_BRIDGE/ZMQ_ALARM_MESSAGE_POINT is not found")
+	}
 
 	s.config.logLevel = cfg.Section("FLISR").Key("LOG").String()
 	if s.config.jobQueueLength, err = cfg.Section("FLISR").Key("QUEUE").Int(); err != nil {
