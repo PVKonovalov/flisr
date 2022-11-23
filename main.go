@@ -174,9 +174,15 @@ func (s *ThisService) ReadConfig(configFile string) error {
 	s.config.username = cfg.Section("CONFIGAPI").Key("USERNAME").String()
 	s.config.password = cfg.Section("CONFIGAPI").Key("PASSWORD").String()
 	s.config.configAPIHostVirtualName = cfg.Section("CONFIGAPI").Key("HOST_VIRTUAL_NAME").String()
-	s.config.configAPIHostList = strings.Split(cfg.Section("FLISR").Key("HOST").String(), ",")
-	if len(s.config.configAPIHostList) == 0 {
-		return fmt.Errorf("FLISR/HOST is not found")
+
+	configAPIHostList := cfg.Section("FLISR").Key("HOST").String()
+	if configAPIHostList == "" {
+		return fmt.Errorf("FLISR/HOST was not found")
+	} else {
+		s.config.configAPIHostList = strings.Split(configAPIHostList, ",")
+		if len(s.config.configAPIHostList[0]) == 0 {
+			return fmt.Errorf("FLISR/HOST was not found")
+		}
 	}
 
 	s.config.zmqRtdb = cfg.Section("BUSES").Key("ZMQ_RTDB_OUTPUT_POINT").String()
