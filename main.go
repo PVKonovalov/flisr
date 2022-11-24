@@ -612,13 +612,15 @@ func (s *ThisService) FlisrGetFaultyEquipment() (int, int, int64) {
 		equipmentArray = append(equipmentArray, resource.equipmentId)
 	}
 
+	s.topologyFlisr.PrintfEquipments(topogrid.TypeCircuitBreaker)
+
 	faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches := s.topologyFlisr.GetFurthestEquipmentFromPower(equipmentArray)
 	s.log.Debugf("Fault in:%v->%d:%d:%d", equipmentArray, faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches)
 
 	return faultyCBEquipmentId, powerSupplyNodeId, numberOfSwitches
 }
 
-func (s *ThisService) GetListCBToIsolateSegmentAndFaultyEquipment(faultyCBEquipmentId int, powerSupplyNodeId int) ([]int, map[int]bool, error) {
+func (s *ThisService) GetListCbToIsolateSegmentAndFaultyEquipment(faultyCBEquipmentId int, powerSupplyNodeId int) ([]int, map[int]bool, error) {
 
 	furthestTerminalNodeId := s.topologyFlisr.GetFurthestEquipmentTerminalIdFromPower(powerSupplyNodeId, faultyCBEquipmentId)
 
@@ -637,7 +639,7 @@ func (s *ThisService) GetListCBToIsolateSegmentAndFaultyEquipment(faultyCBEquipm
 	return cbList, faultyEquipments, nil
 }
 
-func (s *ThisService) GetListCBToRestoreService(listCbToTurnOff []int, faultyEquipments map[int]bool) (map[int][]int, error) {
+func (s *ThisService) GetListCbToRestoreService(listCbToTurnOff []int, faultyEquipments map[int]bool) (map[int][]int, error) {
 	var err error
 
 	mapCbToTurnOn := make(map[int][]int)
@@ -674,7 +676,12 @@ func (s *ThisService) GetListCBToRestoreService(listCbToTurnOff []int, faultyEqu
 							}
 
 							if cbSwitchState, exists1 := s.topologyFlisr.EquipmentSwitchStateByEquipmentId(cbId); exists1 && cbSwitchState == 0 {
-								cbListOn = append(cbListOn, cbId)
+								if _, violatedCondition := s.topologyFlisr.CanBeSwitchedOn(cbId); violatedCondition != nil {
+									s.log.Debugf("don't turn on switch %s: %v", s.topologyFlisr.EquipmentNameByEquipmentId(cbId), violatedCondition)
+									cbListOn = cbListOn[:0]
+								} else {
+									cbListOn = append(cbListOn, cbId)
+								}
 							}
 						}
 
@@ -756,6 +763,9 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 	if state.ThisState == sm.StateInit {
 		s.alarmProtectBuffer = s.alarmProtectBuffer[:0]
 		s.stateSwitchBuffer = s.stateSwitchBuffer[:0]
+		//if err := s.topologyFlisr.CopyEquipmentSwitchStateFrom(s.topologyGrid); err != nil {
+		//	s.log.Errorf("Update topology: %v", err)
+		//}
 	}
 
 	switch state.OutTag {
@@ -767,7 +777,7 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 		faultyCBEquipmentId, powerSupplyNodeId, _ := s.FlisrGetFaultyEquipment()
 
 		if faultyCBEquipmentId != 0 {
-			if listCbToTurnOff, faultyEquipments, err := s.GetListCBToIsolateSegmentAndFaultyEquipment(faultyCBEquipmentId, powerSupplyNodeId); err == nil {
+			if listCbToTurnOff, faultyEquipments, err := s.GetListCbToIsolateSegmentAndFaultyEquipment(faultyCBEquipmentId, powerSupplyNodeId); err == nil {
 				s.log.Debugf("Turn off CB: [%s]", s.topologyFlisr.EquipmentNameByEdgeIdArray(listCbToTurnOff))
 
 				s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
@@ -783,12 +793,10 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 					s.FlisrIsolate(listCbToTurnOff)
 				}
 
-				if mapCbToTurnOn, err := s.GetListCBToRestoreService(listCbToTurnOff, faultyEquipments); err == nil {
+				if mapCbToTurnOn, err := s.GetListCbToRestoreService(listCbToTurnOff, faultyEquipments); err == nil {
 					for _, listCbToTurnOn := range mapCbToTurnOn {
-						for _, cbId := range listCbToTurnOn {
-							if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
-								s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Включить")
-							}
+						for _, equipmentId := range listCbToTurnOn {
+							s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Включить")
 						}
 
 						if s.enableAutoMode {

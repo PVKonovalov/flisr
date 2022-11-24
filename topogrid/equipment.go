@@ -11,6 +11,7 @@ const (
 
 // Equipment Types
 const (
+	TypeAllEquipment     = 0
 	TypeCircuitBreaker   = 1
 	TypeDisconnectSwitch = 2
 	TypePower            = 3
