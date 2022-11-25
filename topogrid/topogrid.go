@@ -461,11 +461,10 @@ func (t *TopologyGridStruct) GetCircuitBreakersEdgeIdsNextToNode(nodeId int) ([]
 func (t *TopologyGridStruct) BfsFromNodeId(nodeIdStart int) []TerminalStruct {
 
 	var path []TerminalStruct
-	t.RLock()
+
 	graph.BFS(graph.Sort(t.currentGraph), t.nodeIdxFromNodeId[nodeIdStart], func(v, w int, c int64) {
 		path = append(path, TerminalStruct{node1Id: t.nodes[v].id, node2Id: t.nodes[w].id, numberOfSwitches: c})
 	})
-	t.RUnlock()
 	return path
 }
 
@@ -547,6 +546,7 @@ func (t *TopologyGridStruct) GetAsGraphMl() string {
 // SetEquipmentElectricalState for all equipment
 // TODO: The electrical state of the switches (edges) in the off state must be calculated by more sophisticated algorithm, since its terminals can have different electrical states.
 func (t *TopologyGridStruct) SetEquipmentElectricalState() {
+	t.Lock()
 
 	for id, equipment := range t.equipment {
 		equipment.electricalState = StateIsolated
@@ -605,6 +605,7 @@ func (t *TopologyGridStruct) SetEquipmentElectricalState() {
 			}
 		}
 	}
+	t.Unlock()
 }
 
 func (t *TopologyGridStruct) PrintfEquipments(typeId int) {
@@ -772,8 +773,8 @@ func (t *TopologyGridStruct) CanBeSwitchedOn(cbEquipmentId int) (bool, error) {
 func (t *TopologyGridStruct) CopyEquipmentSwitchStateFrom(source *TopologyGridStruct) error {
 	source.RLock()
 	for _, equipment := range source.equipment {
-		if equipment.typeId == TypeCircuitBreaker ||
-			equipment.typeId == TypeDisconnectSwitch {
+		if equipment.typeId == TypeCircuitBreaker {
+			fmt.Printf("%d:%d\n", equipment.id, equipment.switchState)
 			if err := t.SetSwitchStateByEquipmentId(equipment.id, equipment.switchState); err != nil {
 				source.RUnlock()
 				return fmt.Errorf("unable copy switch state for equipment %d:%s", equipment.id, equipment.name)

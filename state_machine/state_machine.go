@@ -158,8 +158,8 @@ func (s *StateMachine) NextState(condition Condition) error {
 	}
 }
 
-func (s *StateMachine) Start(state State) {
-	s.curState = state
+func (s *StateMachine) Start() error {
+	return s.moveToState(StateInit, ConditionIsNotDefine)
 }
 
 func (s *StateMachine) timeoutWorker() {

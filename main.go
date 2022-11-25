@@ -763,9 +763,12 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 	if state.ThisState == sm.StateInit {
 		s.alarmProtectBuffer = s.alarmProtectBuffer[:0]
 		s.stateSwitchBuffer = s.stateSwitchBuffer[:0]
-		//if err := s.topologyFlisr.CopyEquipmentSwitchStateFrom(s.topologyGrid); err != nil {
-		//	s.log.Errorf("Update topology: %v", err)
-		//}
+
+		if err := s.topologyFlisr.CopyEquipmentSwitchStateFrom(s.topologyGrid); err != nil {
+			s.log.Errorf("Update topology: %v", err)
+		}
+
+		s.log.Debugf("INIT")
 	}
 
 	switch state.OutTag {
@@ -924,6 +927,8 @@ func main() {
 	//fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
 
 	go s.CurrentStateWorker()
+
+	s.stateMachine.Start()
 
 	err = s.zmq.WaitingLoop()
 
