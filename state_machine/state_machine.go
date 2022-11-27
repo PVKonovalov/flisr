@@ -48,20 +48,22 @@ type StateStruct struct {
 }
 
 type StateMachine struct {
-	curState     State
-	stateMatrix  StateMatrix
-	timer        *time.Timer
-	stateHandler func(StateStruct)
-	log          logging
+	curState         State
+	stateMatrix      StateMatrix
+	timer            *time.Timer
+	toStateHandler   func(StateStruct)
+	fromStateHandler func(StateStruct)
+	log              logging
 }
 
-func New(logger logging, stateHandler func(state StateStruct)) *StateMachine {
+func New(logger logging, fromStateHandler func(state StateStruct), toStateHandler func(state StateStruct)) *StateMachine {
 	return &StateMachine{
-		curState:     StateInit,
-		stateMatrix:  make(StateMatrix),
-		timer:        nil,
-		log:          logger,
-		stateHandler: stateHandler,
+		curState:         StateInit,
+		stateMatrix:      make(StateMatrix),
+		timer:            nil,
+		log:              logger,
+		toStateHandler:   toStateHandler,
+		fromStateHandler: fromStateHandler,
 	}
 }
 
@@ -119,13 +121,15 @@ func (s *StateMachine) moveToState(newState State, condition Condition) error {
 
 	s.log.Debugf("%d-%s->%d", s.curState, condition.Name(), newState)
 
+	s.fromStateHandler(s.stateMatrix[s.curState])
+
 	if state, exists := s.stateMatrix[newState]; exists {
 		s.curState = newState
 		if state.conditionTimeoutMs != 0 && state.nextStateByTimeout != StateNil {
 			s.timer = time.AfterFunc(state.conditionTimeoutMs*time.Millisecond, s.timeoutWorker)
 		}
 
-		s.stateHandler(state)
+		s.toStateHandler(state)
 
 		if nextState := s.getUnconditionalNextState(); nextState != StateNil {
 			return s.moveToState(nextState, ConditionIsNotDefine)
@@ -163,6 +167,7 @@ func (s *StateMachine) Start() error {
 }
 
 func (s *StateMachine) timeoutWorker() {
+
 	state := s.stateMatrix[s.curState]
 	_ = s.moveToState(state.nextStateByTimeout, ConditionTimeout)
 }

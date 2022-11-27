@@ -639,10 +639,10 @@ func (s *ThisService) GetListCbToIsolateSegmentAndFaultyEquipment(faultyCBEquipm
 	return cbList, faultyEquipments, nil
 }
 
-func (s *ThisService) GetListCbToRestoreService(listCbToTurnOff []int, faultyEquipments map[int]bool) (map[int][]int, error) {
+func (s *ThisService) GetListCbToRestoreService(listCbToTurnOff []int, faultyEquipments map[int]bool) (map[int]map[int][]int, error) {
 	var err error
 
-	mapCbToTurnOn := make(map[int][]int)
+	mapCbToTurnOn := make(map[int]map[int][]int) // [wantToRestoreEquipmentId][poweredFromEquipmentId][]CbToOn
 	mapCbToTurnOff := make(map[int]bool)
 
 	for _, edgeId := range listCbToTurnOff {
@@ -657,16 +657,16 @@ func (s *ThisService) GetListCbToRestoreService(listCbToTurnOff []int, faultyEqu
 
 	s.topologyFlisr.SetEquipmentElectricalState()
 
-	for _, equipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
-		if newElectricalState, exists := s.topologyGrid.EquipmentElectricalStateByEquipmentId(equipmentId); exists {
-			if _, exists = faultyEquipments[equipmentId]; !exists {
+	for _, wantToRestoreEquipmentId := range s.equipmentIdArrayFromResourceTypeId[ResourceTypeStateLineSegment] {
+		if newElectricalState, exists := s.topologyGrid.EquipmentElectricalStateByEquipmentId(wantToRestoreEquipmentId); exists {
+			if _, exists = faultyEquipments[wantToRestoreEquipmentId]; !exists {
 				if newElectricalState == topogrid.StateIsolated {
-					equipment := s.equipmentFromEquipmentId[equipmentId]
-					s.log.Debugf("Restore: %s", equipment.Name)
-
-					cbListToEnergizeEquipment := s.topologyFlisr.GetCbListToEnergizeEquipment(equipmentId)
+					equipment := s.equipmentFromEquipmentId[wantToRestoreEquipmentId]
+					cbListToEnergizeEquipment := s.topologyFlisr.GetCbListToEnergizeEquipment(wantToRestoreEquipmentId)
 
 					for powerEquipmentId, cbList := range cbListToEnergizeEquipment {
+						s.log.Debugf("Restore: %s <- %s[%s]", equipment.Name, s.topologyFlisr.EquipmentNameByEquipmentId(powerEquipmentId), s.topologyFlisr.EquipmentNameByEquipmentIdArray(cbList))
+
 						cbListOn := make([]int, 0)
 
 						for _, cbId := range cbList {
@@ -686,11 +686,15 @@ func (s *ThisService) GetListCbToRestoreService(listCbToTurnOff []int, faultyEqu
 						}
 
 						if len(cbListOn) != 0 {
-							mapCbToTurnOn[powerEquipmentId] = cbListOn
+							if mapCbToTurnOn[wantToRestoreEquipmentId] == nil {
+								mapCbToTurnOn[wantToRestoreEquipmentId] = make(map[int][]int)
+							}
+
+							mapCbToTurnOn[wantToRestoreEquipmentId][powerEquipmentId] = cbListOn
 							s.log.Debugf("%s:[%s]", s.topologyFlisr.EquipmentNameByEquipmentId(powerEquipmentId), s.topologyFlisr.EquipmentNameByEquipmentIdArray(cbListOn))
 						}
 					}
-					// s.log.Debugf("+ %+v", mapCbToTurnOn)
+
 				}
 			}
 		}
@@ -754,7 +758,15 @@ func (s *ThisService) SendFlisrAlarmForEquipments(equipments map[int]bool, resou
 	}
 }
 
-func (s *ThisService) StateHandler(state sm.StateStruct) {
+func (s *ThisService) FromStateHandler(state sm.StateStruct) {
+	if state.ThisState == sm.StateInit {
+		if err := s.topologyFlisr.CopyEquipmentSwitchStateFrom(s.topologyGrid); err != nil {
+			s.log.Errorf("Update topology: %v", err)
+		}
+	}
+}
+
+func (s *ThisService) ToStateHandler(state sm.StateStruct) {
 
 	if state.OutMessage != "" {
 		s.log.Debugf("%d->%s", state.ThisState, state.OutMessage)
@@ -763,11 +775,6 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 	if state.ThisState == sm.StateInit {
 		s.alarmProtectBuffer = s.alarmProtectBuffer[:0]
 		s.stateSwitchBuffer = s.stateSwitchBuffer[:0]
-
-		if err := s.topologyFlisr.CopyEquipmentSwitchStateFrom(s.topologyGrid); err != nil {
-			s.log.Errorf("Update topology: %v", err)
-		}
-
 		s.log.Debugf("INIT")
 	}
 
@@ -788,7 +795,7 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 
 				for _, cbId := range listCbToTurnOff {
 					if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
-						s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Отключить")
+						s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Отключить и заблокировать")
 					}
 				}
 
@@ -796,19 +803,30 @@ func (s *ThisService) StateHandler(state sm.StateStruct) {
 					s.FlisrIsolate(listCbToTurnOff)
 				}
 
-				if mapCbToTurnOn, err := s.GetListCbToRestoreService(listCbToTurnOff, faultyEquipments); err == nil {
-					for _, listCbToTurnOn := range mapCbToTurnOn {
-						for _, equipmentId := range listCbToTurnOn {
-							s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Включить")
-						}
+				if errCopy := s.topologyFlisr.CopyEquipmentSwitchStateFrom(s.topologyGrid); errCopy != nil {
+					s.log.Errorf("Update topology: %v", errCopy)
+				}
 
-						if s.enableAutoMode {
-							s.FlisrRestoreService(listCbToTurnOn)
+				s.topologyFlisr.SetEquipmentElectricalState()
+
+				if mapCbToTurnOn, err := s.GetListCbToRestoreService(listCbToTurnOff, faultyEquipments); err == nil {
+					for restoreEquipmentId, mapPoweredByEquipment := range mapCbToTurnOn {
+						for poweredByEquipment, listCbToTurnOn := range mapPoweredByEquipment {
+							if len(listCbToTurnOn) != 0 {
+								s.SendFlisrMessageForEquipment(restoreEquipmentId, "alarm-blue", "Запитать от "+s.equipmentFromEquipmentId[poweredByEquipment].Name)
+							}
+							for _, equipmentId := range listCbToTurnOn {
+								s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Включить")
+							}
+
+							if s.enableAutoMode {
+								s.FlisrRestoreService(listCbToTurnOn)
+							}
 						}
 					}
 				}
 			} else {
-				s.log.Errorf("Failed to isolate equipment id %d: %v", faultyCBEquipmentId, err)
+				s.log.Errorf("Failed to isolate equipment %d: %v", faultyCBEquipmentId, err)
 			}
 		} else {
 			s.log.Errorf("Failed to find faulty equipment")
@@ -861,7 +879,7 @@ func main() {
 		s.log.Fatalf("Failed to read configuration %s: %v", configFile, err)
 	}
 
-	s.stateMachine = sm.New(s.log, s.StateHandler)
+	s.stateMachine = sm.New(s.log, s.FromStateHandler, s.ToStateHandler)
 	s.outputEventQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.inputDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
 	s.switchDataQueue = make(chan types.RtdbMessage, s.config.jobQueueLength)
@@ -925,6 +943,7 @@ func main() {
 	s.topologyFlisr.SetEquipmentElectricalState()
 
 	//fmt.Printf("%s\n", s.stateMachine.GetAsGraphMl())
+	// fmt.Printf("%s\n", s.topologyFlisr.GetAsGraphMl())
 
 	go s.CurrentStateWorker()
 
