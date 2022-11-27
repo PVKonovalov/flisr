@@ -37,7 +37,7 @@ T   - Go to next state by timeout
 
 
 ## Configuration 
-All FLISR configuration is stored in .ini file.
+Main FLISR service configuration is stored in .ini file. The electrical network topology information is loaded from the REST API host.
 ```ini
 [FLISR]
 ; Logging level: ERROR, WARN, INFO, DEBUG
@@ -55,7 +55,6 @@ RTDB_POINT_FLISR_STATE = 2887
 ; FLISR point source from POINT_SOURCE table
 POINT_SOURCE = 15
 
-; FLISR API prefix
-API_PREFIX = /rsdu/flisr
-
+; http://<host name>:<port>/<path prefix>
+HOST = http://127.0.0.1/rsdu/flisr
 ```
