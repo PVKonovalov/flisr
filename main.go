@@ -27,6 +27,12 @@ const ResourceStateIsolated = 1
 const ResourceStateFault = 2
 
 const (
+	MessageFault     = "Fault"
+	MessageIsolate   = "Isolate"
+	MessageSwitchOn  = "Switch On"
+	MessagePowerFrom = "Power from"
+)
+const (
 	StateAlarmReceived sm.State = 1
 	State2             sm.State = 2
 	State3             sm.State = 3
@@ -791,11 +797,11 @@ func (s *ThisService) ToStateHandler(state sm.StateStruct) {
 				s.log.Debugf("Turn off CB: [%s]", s.topologyFlisr.EquipmentNameByEdgeIdArray(listCbToTurnOff))
 
 				s.SendFlisrAlarmForEquipments(faultyEquipments, ResourceTypeStateLineSegment, 2)
-				s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", "Авария")
+				s.SendFlisrMessageForEquipments(faultyEquipments, "alarm-yellow", MessageFault)
 
 				for _, cbId := range listCbToTurnOff {
 					if equipmentId, err := s.topologyFlisr.EquipmentIdByEdgeId(cbId); err == nil {
-						s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Отключить и заблокировать")
+						s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", MessageIsolate)
 					}
 				}
 
@@ -813,10 +819,10 @@ func (s *ThisService) ToStateHandler(state sm.StateStruct) {
 					for restoreEquipmentId, mapPoweredByEquipment := range mapCbToTurnOn {
 						for poweredByEquipment, listCbToTurnOn := range mapPoweredByEquipment {
 							if len(listCbToTurnOn) != 0 {
-								s.SendFlisrMessageForEquipment(restoreEquipmentId, "alarm-blue", "Запитать от "+s.equipmentFromEquipmentId[poweredByEquipment].Name)
+								s.SendFlisrMessageForEquipment(restoreEquipmentId, "alarm-blue", MessagePowerFrom+" "+s.equipmentFromEquipmentId[poweredByEquipment].Name)
 							}
 							for _, equipmentId := range listCbToTurnOn {
-								s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", "Включить")
+								s.SendFlisrMessageForEquipment(equipmentId, "alarm-blue", MessageSwitchOn)
 							}
 
 							if s.enableAutoMode {
