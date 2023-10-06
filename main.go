@@ -574,8 +574,7 @@ func (s *ThisService) OutputEventWorker() {
 		event.TimestampRecv.Time = time.Now()
 		event.Quality = 0
 		event.Source = s.config.pointSource
-
-		// s.log.Debugf("O: %+v", event)
+		event.TimestampFromClient = 0
 
 		data, err := json.Marshal([]types.RtdbMessage{event})
 		if err != nil {

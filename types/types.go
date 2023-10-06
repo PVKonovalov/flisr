@@ -30,18 +30,19 @@ func (c IsoDate) String() string {
 }
 
 type RtdbMessage struct {
-	Timestamp     IsoDate `json:"ts"`
-	TimestampRecv IsoDate `json:"tsr"`
-	Id            uint64  `json:"id"`
-	Value         float32 `json:"v"`
-	Quality       uint32  `json:"qds"`
-	Source        uint32  `json:"src"`
-	Select        int     `json:"s"`
-	Execute       int     `json:"e"`
+	Timestamp           IsoDate `json:"ts"`
+	TimestampRecv       IsoDate `json:"tsr"`
+	Id                  uint64  `json:"id"`
+	Value               float32 `json:"v"`
+	Quality             uint32  `json:"qds"`
+	Source              uint32  `json:"src"`
+	Select              int     `json:"s"`
+	Execute             int     `json:"e"`
+	TimestampFromClient int     `json:"gi"`
 }
 
 func (c RtdbMessage) String() string {
-	return fmt.Sprintf("[%d V: %.4f T: %s Q: %d S: %d]", c.Id, c.Value, c.Timestamp, c.Quality, c.Source)
+	return fmt.Sprintf("[%d V: %.4f T: %s Q: %d S: %d G: %d]", c.Id, c.Value, c.Timestamp, c.Quality, c.Source, c.TimestampFromClient)
 }
 
 // ParseScadaRtdbData Parse data from Scada RTDB to Go internal types
