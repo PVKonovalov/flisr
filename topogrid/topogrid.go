@@ -149,17 +149,27 @@ func (t *TopologyGridStruct) EquipmentNameByNodeIdxArray(idxArray []int) string 
 
 // EquipmentNameByEdgeIdx returns a string with node name by the node index
 func (t *TopologyGridStruct) EquipmentNameByEdgeIdx(idx int) string {
-	return t.equipment[t.edges[idx].equipmentId].name
+	t.RLock()
+	name := t.equipment[t.edges[idx].equipmentId].name
+	t.RUnlock()
+
+	return name
 }
 
 // EquipmentElectricalStateByEquipmentId returns an equipment electrical state by the equipment id
 func (t *TopologyGridStruct) EquipmentElectricalStateByEquipmentId(id int) (uint8, bool) {
+	t.RLock()
 	equipment, exists := t.equipment[id]
+	t.RUnlock()
+
 	return equipment.electricalState, exists
 }
 
 func (t *TopologyGridStruct) EquipmentSwitchStateByEquipmentId(id int) (int, bool) {
+	t.RLock()
 	equipment, exists := t.equipment[id]
+	t.RUnlock()
+
 	return equipment.switchState, exists
 }
 
