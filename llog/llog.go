@@ -1,4 +1,3 @@
-// Created by Pavel Konovalov pkonovalov@orxagrid.com
 //
 // Log with standard different logging levels
 //

@@ -1,4 +1,3 @@
-// Created by Pavel Konovalov pkonovalov@orxagrid.com
 //
 // The webapi package implements access to the WEB API server
 //
@@ -17,12 +16,10 @@ import (
 )
 
 type Connection struct {
-	Timeout                time.Duration
-	BaseUrl                string
-	HostVirtualName        string
-	Token                  string
-	DatastreamResponseTime float64
-	DontNotSendData        bool
+	Timeout         time.Duration
+	BaseUrl         string
+	HostVirtualName string
+	Token           string
 }
 
 var TokenExpiredError = errors.New("token expired")
