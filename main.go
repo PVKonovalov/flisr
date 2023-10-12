@@ -51,7 +51,7 @@ const (
 	ResourceTypeMeasure          int = 1
 	ResourceTypeState            int = 2
 	ResourceTypeControl          int = 3
-	ResourceTypeProtect          int = 4
+	ResourceTypeProtection       int = 4
 	ResourceTypeLink             int = 5
 	ResourceTypeChangeSetGroup   int = 6
 	ResourceTypeReclosing        int = 7
@@ -414,7 +414,7 @@ func (s *ThisService) LoadEquipmentProfile(timeoutSec time.Duration, isLoadFromC
 func (s *ThisService) CreateInternalParametersFromProfiles() {
 	for _, equipment := range s.equipmentFromEquipmentId {
 		for _, resource := range equipment.Resource {
-			if resource.TypeId == ResourceTypeProtect ||
+			if resource.TypeId == ResourceTypeProtection ||
 				resource.TypeId == ResourceTypeReclosing ||
 				resource.TypeId == ResourceTypeState ||
 				resource.TypeId == ResourceTypeStateLineSegment ||
@@ -542,7 +542,7 @@ func (s *ThisService) ReceiveDataWorker() {
 			s.stateSwitchBuffer = append(s.stateSwitchBuffer, point)
 
 			_ = s.stateMachine.NextState(condition)
-		case ResourceTypeProtect:
+		case ResourceTypeProtection:
 			condition = sm.ConditionProtect
 
 			if point.Value == 1 {
