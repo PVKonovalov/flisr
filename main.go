@@ -11,11 +11,12 @@ import (
 	"flisr/webapi"
 	"flisr/zmq_bus"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/PVKonovalov/localcache"
 	"github.com/PVKonovalov/topogrid"
 	"gopkg.in/ini.v1"
-	"strings"
-	"time"
 )
 
 const ApiGetTopology = "/api/topology/graph"

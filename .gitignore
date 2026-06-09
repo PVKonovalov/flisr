@@ -18,3 +18,4 @@ flisr
 *.cfg
 cache/
 !flisr-init.cfg
+.DS_Store

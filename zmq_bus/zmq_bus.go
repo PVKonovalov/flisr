@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	zmq "github.com/pebbe/zmq4"
-	"golang.org/x/sync/errgroup"
 	"sync"
 	"time"
+
+	zmq "github.com/pebbe/zmq4"
+	"golang.org/x/sync/errgroup"
 )
 
 const RtdbInterrogationCommand = "{\"dest\": \"rtdb\", \"cmd\": \"gi\"}"
